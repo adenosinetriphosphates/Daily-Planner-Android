@@ -6,6 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#2D6A4F">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="screen-orientation" content="landscape">
 <title>Daily Planner</title>
 <link rel="manifest" href="manifest.json">
 <meta name="apple-mobile-web-app-title" content="Planner">
@@ -810,6 +811,23 @@
 
   .sep { height: 1px; background: var(--border); margin: 14px 0; }
 
+
+  .orient-btn {
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 20px;
+    padding: 4px 13px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    color: rgba(255,255,255,0.92);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s;
+  }
+  .orient-btn:hover { background: rgba(255,255,255,0.25); }
+  .orient-btn.active { background: rgba(255,255,255,0.28); border-color: rgba(255,255,255,0.6); }
   .wakelock-btn {
     background: rgba(255,255,255,0.15);
     border: 1px solid rgba(255,255,255,0.35);
@@ -841,6 +859,8 @@
     <div class="autostart-badge"><div class="autostart-dot"></div>Auto-start on</div>
     <div class="clock-sep"></div>
     <button class="wakelock-btn" id="wakeLockBtn" onclick="toggleWakeLock()"><div class="wakelock-dot" id="wlDot"></div><span id="wlLabel">Keep awake</span></button>
+    <div class="clock-sep"></div>
+    <button class="orient-btn" id="orientBtn" onclick="toggleOrientation()">⟳ Lock landscape</button>
   </div>
 
   <div class="topbar">
@@ -1501,6 +1521,41 @@ function switchMain(view) {
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+
+// ===== ORIENTATION =====
+let orientationLocked = false;
+
+async function toggleOrientation() {
+  const btn = document.getElementById('orientBtn');
+  if (!screen.orientation || !screen.orientation.lock) {
+    alert('Orientation lock not supported on this device/browser.');
+    return;
+  }
+  if (!orientationLocked) {
+    try {
+      await screen.orientation.lock('landscape');
+      orientationLocked = true;
+      btn.textContent = '↕ Unlock rotation';
+      btn.classList.add('active');
+    } catch(e) { alert('Could not lock orientation: ' + e.message); }
+  } else {
+    screen.orientation.unlock();
+    orientationLocked = false;
+    btn.textContent = '⟳ Lock landscape';
+    btn.classList.remove('active');
+  }
+}
+
+window.addEventListener('load', () => {
+  if (screen.orientation && screen.orientation.lock) {
+    screen.orientation.lock('landscape').then(() => {
+      orientationLocked = true;
+      const btn = document.getElementById('orientBtn');
+      if (btn) { btn.textContent = '↕ Unlock rotation'; btn.classList.add('active'); }
+    }).catch(() => {});
+  }
+});
 
 // ===== WAKE LOCK + ANTI-SLEEP =====
 let wakeLock = null;
