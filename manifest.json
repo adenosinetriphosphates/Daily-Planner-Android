@@ -1,6 +1,6 @@
 {
   "name": "Daily Planner",
-  "short_name": "Day Planner",
+  "short_name": "Daily Planner",
   "description": "Daily task planner with timers and calendar",
   "start_url": "./index.html",
   "display": "standalone",
