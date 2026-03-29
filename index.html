@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#2D6A4F">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="screen-orientation" content="landscape">
-<title>My Daily Planner</title>
+<title>Daily Planner</title>
 <link rel="manifest" href="manifest.json">
 <meta name="apple-mobile-web-app-title" content="Planner">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -748,6 +748,31 @@
 
   .ev-actions { display: flex; gap: 5px; margin-top: 6px; }
 
+  .ev-edit-form {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    margin-top: 8px;
+    display: none;
+  }
+  .ev-edit-form.open { display: block; }
+  .ev-edit-form input, .ev-edit-form select {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    background: var(--surface2);
+    color: var(--text);
+    outline: none;
+    margin-bottom: 6px;
+    display: block;
+  }
+  .ev-edit-form input:focus, .ev-edit-form select:focus { border-color: var(--accent2); background: var(--surface); }
+
+
   /* Timeline view */
   .timeline { position: relative; padding-left: 60px; }
 
@@ -857,6 +882,8 @@
     <div class="clock-date" id="clockDate"></div>
     <div class="clock-sep"></div>
     <div class="autostart-badge"><div class="autostart-dot"></div>Auto-start on</div>
+    <div class="clock-sep"></div>
+    <span id="syncStatus" style="font-size:11px;color:rgba(255,255,255,0.6);padding:0 4px;">☁ Connecting…</span>
     <div class="clock-sep"></div>
     <button class="wakelock-btn" id="wakeLockBtn" onclick="toggleWakeLock()"><div class="wakelock-dot" id="wlDot"></div><span id="wlLabel">Keep awake</span></button>
     <div class="clock-sep"></div>
@@ -1026,9 +1053,96 @@
 
 </div>
 
-<script>
-let tasks = JSON.parse(localStorage.getItem('dp_tasks') || '[]');
-let events = JSON.parse(localStorage.getItem('dp_events') || '[]');
+<script type="module">
+let tasks = [];
+let events = [];
+let db = null;
+let syncEnabled = false;
+const SYNC_DOC = 'planner/data';
+
+// ── FIREBASE INIT ──
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getFirestore, doc, setDoc, onSnapshot, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBK9sjOnHmeoRqHz6sz31wYSClKYjKZYyQ",
+  authDomain: "daily-planner-9ce7a.firebaseapp.com",
+  projectId: "daily-planner-9ce7a",
+  storageBucket: "daily-planner-9ce7a.firebasestorage.app",
+  messagingSenderId: "776129481231",
+  appId: "1:776129481231:web:098c5a5dfe0befb4fc317a"
+};
+
+const fbApp = initializeApp(firebaseConfig);
+db = getFirestore(fbApp);
+
+async function syncLoad() {
+  try {
+    const ref = doc(db, 'planner', 'data');
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      const d = snap.data();
+      tasks = d.tasks || [];
+      events = d.events || [];
+    } else {
+      // first time — seed from localStorage if anything there
+      const lt = localStorage.getItem('dp_tasks');
+      const le = localStorage.getItem('dp_events');
+      if (lt) tasks = JSON.parse(lt);
+      if (le) events = JSON.parse(le);
+    }
+    syncEnabled = true;
+    showSyncStatus('synced');
+    // live listener
+    onSnapshot(ref, (snap) => {
+      if (!snap.exists()) return;
+      const d = snap.data();
+      // only update if changed externally (compare JSON)
+      const incoming = JSON.stringify({ tasks: d.tasks, events: d.events });
+      const current  = JSON.stringify({ tasks, events });
+      if (incoming !== current) {
+        tasks = d.tasks || [];
+        events = d.events || [];
+        // stop running timers that no longer exist
+        Object.keys(timers).forEach(id => {
+          if (!tasks.find(t => t.id === id)) { clearInterval(timers[id]); delete timers[id]; }
+        });
+        renderTasks();
+        renderEventList();
+        renderCalendar();
+        renderTimeline();
+      }
+    });
+  } catch(e) {
+    console.warn('Firebase load failed, using localStorage', e);
+    const lt = localStorage.getItem('dp_tasks');
+    const le = localStorage.getItem('dp_events');
+    if (lt) tasks = JSON.parse(lt);
+    if (le) events = JSON.parse(le);
+    showSyncStatus('offline');
+  }
+}
+
+async function syncSave() {
+  // always keep localStorage as backup
+  localStorage.setItem('dp_tasks', JSON.stringify(tasks));
+  localStorage.setItem('dp_events', JSON.stringify(events));
+  if (!syncEnabled || !db) return;
+  try {
+    await setDoc(doc(db, 'planner', 'data'), { tasks, events, updated: Date.now() });
+    showSyncStatus('synced');
+  } catch(e) {
+    showSyncStatus('error');
+  }
+}
+
+function showSyncStatus(state) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  if (state === 'synced')  { el.textContent = '☁ Synced';  el.style.color = 'rgba(255,255,255,0.75)'; }
+  if (state === 'offline') { el.textContent = '⚠ Offline'; el.style.color = '#F1C40F'; }
+  if (state === 'error')   { el.textContent = '✕ Sync err'; el.style.color = '#E74C3C'; }
+}
 let calDate = new Date();
 let selectedDay = null;
 let timers = {};
@@ -1036,10 +1150,7 @@ let timers = {};
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
-function save() {
-  localStorage.setItem('dp_tasks', JSON.stringify(tasks));
-  localStorage.setItem('dp_events', JSON.stringify(events));
-}
+function save() { syncSave(); }
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 
@@ -1306,6 +1417,34 @@ function deleteEvent(id) {
   renderTimeline();
 }
 
+
+function toggleEditEvent(id) {
+  const form = document.getElementById('evedit_' + id);
+  if (!form) return;
+  form.classList.toggle('open');
+  if (form.classList.contains('open')) {
+    const inp = document.getElementById('evEditName_' + id);
+    if (inp) { inp.focus(); inp.select(); }
+  }
+}
+
+function saveEditEvent(id) {
+  const ev = events.find(e => e.id === id);
+  if (!ev) return;
+  const nameEl = document.getElementById('evEditName_' + id);
+  const impEl  = document.getElementById('evEditImp_' + id);
+  const durEl  = document.getElementById('evEditDur_' + id);
+  const timeEl = document.getElementById('evEditTime_' + id);
+  if (nameEl && nameEl.value.trim()) ev.name = nameEl.value.trim();
+  if (impEl)  ev.importance = impEl.value;
+  if (durEl)  ev.duration = parseInt(durEl.value) || ev.duration;
+  if (timeEl) ev.time = timeEl.value;
+  save();
+  renderEventList();
+  renderCalendar();
+  renderTimeline();
+}
+
 function renderEventList() {
   const list = document.getElementById('eventList');
   if (!events.length) {
@@ -1320,11 +1459,31 @@ function renderEventList() {
     else schedLabel = (ev.schedDays || []).map(d => DAYS[d]).join(', ');
     if (ev.recurring && ev.scheduleType !== 'once') schedLabel += ` · every ${ev.recurWeeks}w`;
     return `
-    <div class="event-card">
+    <div class="event-card" id="evcard_${ev.id}">
       <div class="ev-name">${escHtml(ev.name)}</div>
       <div class="ev-meta">${schedLabel}${ev.time ? ' · ' + ev.time : ''} · ${ev.duration} min · <span class="${impClass(ev.importance)}" style="font-size:10px;padding:1px 5px;border-radius:8px;font-weight:600;">${impLabel(ev.importance)}</span></div>
       <div class="ev-actions">
+        <button class="icon-btn" onclick="toggleEditEvent('${ev.id}')">✏ Edit</button>
         <button class="icon-btn del-btn" onclick="deleteEvent('${ev.id}')">✕ Remove</button>
+      </div>
+      <div class="ev-edit-form" id="evedit_${ev.id}">
+        <input type="text" id="evEditName_${ev.id}" value="${escHtml(ev.name)}" placeholder="Event name" />
+        <select id="evEditImp_${ev.id}">
+          <option value="low"${ev.importance==='low'?' selected':''}>Low</option>
+          <option value="medium"${ev.importance==='medium'?' selected':''}>Medium</option>
+          <option value="high"${ev.importance==='high'?' selected':''}>High</option>
+          <option value="critical"${ev.importance==='critical'?' selected':''}>Critical</option>
+        </select>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+          <label style="font-size:11px;color:var(--text2);white-space:nowrap;">Duration (min)</label>
+          <input type="number" id="evEditDur_${ev.id}" value="${ev.duration}" min="1" max="480" style="width:70px;" />
+          <label style="font-size:11px;color:var(--text2);">Time</label>
+          <input type="time" id="evEditTime_${ev.id}" value="${ev.time || ''}" style="flex:1;" />
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn" style="font-size:12px;padding:5px 10px;" onclick="saveEditEvent('${ev.id}')">Save</button>
+          <button class="btn secondary" style="font-size:12px;padding:5px 10px;" onclick="toggleEditEvent('${ev.id}')">Cancel</button>
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -1557,36 +1716,45 @@ window.addEventListener('load', () => {
   }
 });
 
-// ===== WAKE LOCK + ANTI-SLEEP =====
+// ===== WAKE LOCK + ANTI-SLEEP (hardened) =====
 let wakeLock = null;
 let audioCtx = null;
 let silentPingInterval = null;
+let wakeLockHeartbeat = null;
 let wakeLockEnabled = false;
 
 function playSilentPing() {
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const buf = audioCtx.createBuffer(1, Math.max(1, audioCtx.sampleRate * 0.05), audioCtx.sampleRate);
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
-    src.connect(audioCtx.destination);
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.001;
+    src.connect(gain);
+    gain.connect(audioCtx.destination);
     src.start();
   } catch(e) {}
 }
 
 async function requestWakeLock() {
-  if ('wakeLock' in navigator) {
-    try {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', () => {
-        if (wakeLockEnabled) requestWakeLock();
-      });
-    } catch(e) {}
-  }
+  if (!('wakeLock' in navigator)) return;
+  try {
+    if (wakeLock) { try { await wakeLock.release(); } catch(e) {} wakeLock = null; }
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => {
+      wakeLock = null;
+      // re-acquire after a short delay if still enabled and page visible
+      if (wakeLockEnabled && document.visibilityState === 'visible') {
+        setTimeout(requestWakeLock, 500);
+      }
+    });
+  } catch(e) {}
 }
 
 function releaseWakeLock() {
-  if (wakeLock) { wakeLock.release(); wakeLock = null; }
+  if (wakeLock) { try { wakeLock.release(); } catch(e) {} wakeLock = null; }
 }
 
 async function toggleWakeLock() {
@@ -1596,20 +1764,41 @@ async function toggleWakeLock() {
   if (wakeLockEnabled) {
     btn.classList.add('active');
     lbl.textContent = 'Awake';
-    await requestWakeLock();
+    // init audio context on user gesture
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') await audioCtx.resume();
-    silentPingInterval = setInterval(playSilentPing, 25000);
+    await requestWakeLock();
+    // silent audio ping every 20s to keep tab alive
+    silentPingInterval = setInterval(playSilentPing, 20000);
+    // heartbeat: re-check wake lock every 15s in case Android killed it silently
+    wakeLockHeartbeat = setInterval(async () => {
+      if (wakeLockEnabled && document.visibilityState === 'visible' && !wakeLock) {
+        await requestWakeLock();
+      }
+    }, 15000);
   } else {
     btn.classList.remove('active');
     lbl.textContent = 'Keep awake';
     releaseWakeLock();
     clearInterval(silentPingInterval);
+    clearInterval(wakeLockHeartbeat);
   }
 }
 
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && wakeLockEnabled) requestWakeLock();
+// re-acquire on tab focus / visibility restore
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && wakeLockEnabled) {
+    await requestWakeLock();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+});
+
+window.addEventListener('focus', async () => {
+  if (wakeLockEnabled && !wakeLock) await requestWakeLock();
+});
+
+window.addEventListener('pageshow', async () => {
+  if (wakeLockEnabled) await requestWakeLock();
 });
 
 // ===== CLOCK =====
@@ -1691,7 +1880,7 @@ function handleResize() {
 window.addEventListener('resize', handleResize);
 
 // Init
-function init() {
+async function init() {
   const today = new Date();
   document.getElementById('todayLabel').textContent =
     DAYS[today.getDay()] + ', ' + MONTHS[today.getMonth()] + ' ' + today.getDate() + ', ' + today.getFullYear();
@@ -1703,6 +1892,10 @@ function init() {
   document.getElementById('evDate').value = toDateStr(today);
 
   selectedDay = today;
+
+  // load from Firebase (falls back to localStorage if offline)
+  await syncLoad();
+
   renderTasks();
   renderEventList();
   renderCalendar();
