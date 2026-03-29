@@ -75,15 +75,21 @@ async function syncLoad() {
   }
 }
 
+let _saveTimer = null;
 async function syncSave() {
+  // Always save to localStorage immediately
   localStorage.setItem('dp_tasks',     JSON.stringify(tasks));
   localStorage.setItem('dp_events',    JSON.stringify(events));
   localStorage.setItem('dp_deadlines', JSON.stringify(deadlines));
   if (!syncEnabled || !db) return;
-  try {
-    await db.collection('planner').doc('data').set({ tasks, events, deadlines, updated: Date.now() });
-    showSyncStatus('synced');
-  } catch(e) { showSyncStatus('error'); }
+  // Debounce Firebase writes to at most once every 5 seconds
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(async () => {
+    try {
+      await db.collection('planner').doc('data').set({ tasks, events, deadlines, updated: Date.now() });
+      showSyncStatus('synced');
+    } catch(e) { showSyncStatus('error'); }
+  }, 5000);
 }
 
 function showSyncStatus(state) {
@@ -143,6 +149,13 @@ function deleteTask(id) {
   stopTimer(id);
   tasks = tasks.filter(t => t.id !== id);
   save(); renderTasks(); renderCalendar(); renderTimeline();
+}
+
+function toggleTaskDone(id) {
+  const t = tasks.find(t => t.id === id); if (!t) return;
+  t.done = !t.done;
+  if (t.done) stopTimer(id);
+  save(); renderTasks(); renderCalendar();
 }
 
 function startTimer(id) {
@@ -213,9 +226,12 @@ function renderTasks() {
     const total=task.duration*60, elapsed=task.elapsed||0;
     const pct=Math.min(elapsed/total,1), remaining=Math.max(total-elapsed,0);
     const td = task.running ? 'Remaining: '+fmtTime(remaining) : (elapsed>0?'Elapsed: '+fmtTime(elapsed):fmtTime(total)+' total');
-    return `<div class="task-card${task.running?' running':''}" id="task_${task.id}">
+    return `<div class="task-card${task.running?' running':''}${task.done?' done':''}" id="task_${task.id}">
       <div class="task-header">
-        <div class="task-name">${escHtml(task.name)}</div>
+        <button class="done-btn${task.done?' done-active':''}" onclick="toggleTaskDone('${task.id}')" title="${task.done?'Mark incomplete':'Mark complete'}">
+          ${task.done?'✓':'○'}
+        </button>
+        <div class="task-name${task.done?' done-name':''}">${escHtml(task.name)}</div>
         <span class="importance-badge ${impClass(task.importance)}">${impLabel(task.importance)}</span>
       </div>
       <div class="task-meta"><span>⏱ ${task.duration} min</span>${task.startTime?`<span>🕐 ${task.startTime}</span>`:''}</div>
@@ -277,6 +293,11 @@ function addEvent() {
 
 function deleteEvent(id) { events=events.filter(e=>e.id!==id); save(); renderEventList(); renderCalendar(); renderTimeline(); }
 
+function toggleEventDone(id) {
+  const ev = events.find(e => e.id === id); if (!ev) return;
+  ev.done = !ev.done; save(); renderEventList(); renderCalendar();
+}
+
 function toggleEditEvent(id) {
   const form = document.getElementById('evedit_'+id); if (!form) return;
   form.classList.toggle('open');
@@ -303,7 +324,10 @@ function renderEventList() {
     else sl=(ev.schedDays||[]).map(d=>DAYS[d]).join(', ');
     if(ev.recurring&&ev.scheduleType!=='once') sl+=` · every ${ev.recurWeeks}w`;
     return `<div class="event-card" id="evcard_${ev.id}">
-      <div class="ev-name">${escHtml(ev.name)}</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+        <button class="done-btn${ev.done?' done-active':''}" onclick="toggleEventDone('${ev.id}')" title="${ev.done?'Mark incomplete':'Mark complete'}">${ev.done?'✓':'○'}</button>
+        <div class="ev-name${ev.done?' done-name':''}" style="margin:0;">${escHtml(ev.name)}</div>
+      </div>
       <div class="ev-meta">${sl}${ev.time?' · '+ev.time:''} · ${ev.duration} min · <span class="${impClass(ev.importance)}" style="font-size:10px;padding:1px 5px;border-radius:8px;font-weight:600;">${impLabel(ev.importance)}</span></div>
       <div class="ev-actions">
         <button class="icon-btn" onclick="toggleEditEvent('${ev.id}')">✏ Edit</button>
@@ -382,7 +406,8 @@ function renderDeadlines() {
     const cd=deadlineCountdown(dl.date);
     return `<div class="deadline-card" id="dlcard_${dl.id}">
       <div class="deadline-header">
-        <div class="deadline-name">${escHtml(dl.name)}</div>
+        <button class="done-btn${dl.done?' done-active':''}" onclick="toggleDeadlineDone('${dl.id}')" title="${dl.done?'Mark incomplete':'Mark complete'}">${dl.done?'✓':'○'}</button>
+        <div class="deadline-name${dl.done?' done-name':''}">${escHtml(dl.name)}</div>
         <span class="importance-badge ${impClass(dl.importance)}">${impLabel(dl.importance)}</span>
       </div>
       <div class="deadline-meta"><span>📅 ${dl.date}</span><span class="deadline-countdown ${cd.cls}">${cd.label}</span></div>
@@ -627,14 +652,30 @@ function playAlarmSound() {
   try {
     if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
     if(audioCtx.state==='suspended') audioCtx.resume();
-    const beep=(freq,start,dur)=>{
+    const now=audioCtx.currentTime;
+    // Master gain for volume boost
+    const master=audioCtx.createGain();
+    master.gain.value=1.0;
+    master.connect(audioCtx.destination);
+    // Compressor to prevent clipping
+    const comp=audioCtx.createDynamicsCompressor();
+    comp.threshold.value=-6; comp.knee.value=3;
+    comp.ratio.value=4; comp.attack.value=0.001; comp.release.value=0.1;
+    comp.connect(master);
+    const beep=(freq,type,start,dur,vol)=>{
       const osc=audioCtx.createOscillator(),g=audioCtx.createGain();
-      osc.connect(g);g.connect(audioCtx.destination);osc.frequency.value=freq;osc.type='sine';
-      g.gain.setValueAtTime(0.45,audioCtx.currentTime+start);g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+start+dur);
-      osc.start(audioCtx.currentTime+start);osc.stop(audioCtx.currentTime+start+dur+0.05);
+      osc.connect(g);g.connect(comp);osc.frequency.value=freq;osc.type=type||'sawtooth';
+      g.gain.setValueAtTime(vol||0.8,now+start);
+      g.gain.exponentialRampToValueAtTime(0.001,now+start+dur);
+      osc.start(now+start);osc.stop(now+start+dur+0.05);
     };
-    for(let i=0;i<6;i++){beep(880,i*0.6,0.2);beep(1100,i*0.6+0.25,0.15);}
-    alarmAudio=setTimeout(playAlarmSound,4000);
+    // Loud repeating pattern: high-low-high pairs x8
+    for(let i=0;i<8;i++){
+      beep(1047,  'sawtooth', i*0.55,      0.18, 0.9);
+      beep(1319,  'square',   i*0.55+0.2,  0.12, 0.7);
+    }
+    // Repeat every 4.5s while alarm is firing
+    alarmAudio=setTimeout(playAlarmSound,4500);
   } catch(e){}
 }
 
@@ -819,23 +860,71 @@ function mobileTab(tab) {
   const btn=document.getElementById('mnav-'+tab);if(btn)btn.classList.add('active');
   if(window.innerWidth>900) return;
   const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
-  [tp,ma,cp].forEach(el=>{if(el)el.classList.add('hidden-mobile');});
-  if(tab==='tasks'){tp.classList.remove('hidden-mobile');document.getElementById('mainTasks').style.display='';document.getElementById('mainTimeline').style.display='none';}
-  else if(tab==='timeline'){ma.classList.remove('hidden-mobile');document.getElementById('mainTasks').style.display='none';document.getElementById('mainTimeline').style.display='';renderTimeline();}
-  else if(tab==='calendar'){cp.classList.remove('hidden-mobile');}
+  // Hide all panels
+  [tp,ma].forEach(el=>{if(el)el.classList.add('hidden-mobile');});
+  if(cp){ cp.classList.remove('shown-mobile'); cp.style.display='none'; }
+  if(tab==='tasks'){
+    tp.classList.remove('hidden-mobile');
+    document.getElementById('mainTasks').style.display='';
+    document.getElementById('mainTimeline').style.display='none';
+  } else if(tab==='timeline'){
+    ma.classList.remove('hidden-mobile');
+    document.getElementById('mainTasks').style.display='none';
+    document.getElementById('mainTimeline').style.display='';
+    renderTimeline();
+  } else if(tab==='calendar'){
+    if(cp){ cp.style.display='block'; cp.classList.add('shown-mobile'); }
+  }
 }
 
 function handleResize() {
   const isMobile=window.innerWidth<=900;
   const mobileNav=document.getElementById('mobileNav');
-  if(isMobile){mobileNav.style.display='block';mobileTab('tasks');}
-  else{
+  if(isMobile){
+    mobileNav.style.display='block';
+    // Hide terminal on mobile always
+    const tp2=document.getElementById('termPanel'),tb=document.getElementById('termToggle');
+    if(tp2) tp2.style.display='none';
+    if(tb)  tb.style.display='none';
+    mobileTab('tasks');
+  } else {
     mobileNav.style.display='none';
     const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
-    [tp,ma,cp].forEach(el=>{if(el)el.classList.remove('hidden-mobile');});
+    [tp,ma].forEach(el=>{if(el){el.classList.remove('hidden-mobile');el.style.display='';}});
+    if(cp){ cp.classList.remove('shown-mobile'); cp.style.display=''; cp.classList.remove('hidden-mobile'); }
   }
 }
 window.addEventListener('resize',handleResize);
+
+// ── EXPOSE TO WINDOW ──
+Object.assign(window,{
+  toggleTaskDone, toggleEventDone, toggleDeadlineDone,
+  addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
+  addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
+  addDeadline,deleteDeadline,toggleEditDeadline,saveEditDeadline,
+  selectDay,calPrev,calNext,switchMain,mobileTab,
+  openClockMode,closeClockMode,switchCmTab,fetchWeather,
+  addAlarm,deleteAlarm,toggleAlarm,dismissAlarm,snoozeAlarm
+});
+
+// ── INIT ──
+async function init() {
+  const today=new Date();
+  document.getElementById('todayLabel').textContent=DAYS[today.getDay()]+', '+MONTHS[today.getMonth()]+' '+today.getDate()+', '+today.getFullYear();
+  const pad=n=>String(n).padStart(2,'0');
+  document.getElementById('newTaskTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
+  document.getElementById('evTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
+  document.getElementById('evDate').value=toDateStr(today);
+  selectedDay=today;
+  const cb=document.getElementById('clockModeBtnWire');
+  if(cb) cb.addEventListener('click',openClockMode);
+  await syncLoad();
+  renderTasks();renderEventList();renderCalendar();renderDeadlines();
+  tickClock();setInterval(tickClock,1000);handleResize();
+}
+
+init();
+})();
 
 // ═══════════════════════════════════════════════════
 // ── TERMINAL ──
@@ -853,9 +942,9 @@ function toggleTerminal() {
 }
 
 function termWelcome() {
-  termPrintHtml('head', '<span style="color:#3dd68c;">planner</span> <span style="color:#2a6e40;">v1.0</span>');
-  termPrint('dim',  'Type <span style="color:#5a9e6f;">help</span> for available commands.');
-  termPrintHtml('dim', '─────────────────────────────────────');
+  termPrint('head', '  Daily Planner Terminal  ');
+  termPrint('dim',  '  type help for commands  ');
+  termPrint('dim',  '──────────────────────────');
 }
 
 function termPrint(cls, text) {
@@ -867,19 +956,10 @@ function termPrint(cls, text) {
   out.scrollTop = out.scrollHeight;
 }
 
-function termPrintHtml(cls, html) {
-  const out = document.getElementById('termOutput');
-  const el = document.createElement('div');
-  el.className = 't-line t-' + cls;
-  el.innerHTML = html;
-  out.appendChild(el);
-  out.scrollTop = out.scrollHeight;
-}
-
-function termEcho(cmd) {
-  termPrintHtml('prompt',
-    `<span class="term-u">user</span><span class="term-at">@</span><span class="term-h">planner</span><span class="term-sep">:</span><span class="term-path">~</span><span class="term-dollar">$</span> <span style="color:#d4e8d6;">${escHtml(cmd)}</span>`
-  );
+function termEcho(cmd, result) {
+  termPrint('prompt', 'planner> ' + cmd);
+  if (Array.isArray(result)) result.forEach(([c,t]) => termPrint(c,t));
+  else if (result) termPrint('out', result);
 }
 
 function termError(msg) { termPrint('err', '✕  ' + msg); }
@@ -954,7 +1034,6 @@ function termRun(raw) {
   if (!raw) return;
   termHistory.unshift(raw);
   termHistIdx = -1;
-  termEcho(raw);
   const parts = parseArgs(raw);
   const cmd = parts[0]?.toLowerCase();
   const sub = parts[1]?.toLowerCase();
@@ -1365,34 +1444,8 @@ window.addEventListener('load', () => {
   initTermDrag();
 });
 
-// ── INIT TERMINAL ──
-
-// ── EXPOSE TO WINDOW ──
-Object.assign(window,{
-  addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
-  addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
-  addDeadline,deleteDeadline,toggleEditDeadline,saveEditDeadline,
-  selectDay,calPrev,calNext,switchMain,mobileTab,
-  openClockMode,closeClockMode,switchCmTab,fetchWeather,
-  addAlarm,deleteAlarm,toggleAlarm,dismissAlarm,snoozeAlarm,
-  toggleTerminal,termRun
-});
-
-// ── INIT ──
-async function init() {
-  const today=new Date();
-  document.getElementById('todayLabel').textContent=DAYS[today.getDay()]+', '+MONTHS[today.getMonth()]+' '+today.getDate()+', '+today.getFullYear();
-  const pad=n=>String(n).padStart(2,'0');
-  document.getElementById('newTaskTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
-  document.getElementById('evTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
-  document.getElementById('evDate').value=toDateStr(today);
-  selectedDay=today;
-  const cb=document.getElementById('clockModeBtnWire');
-  if(cb) cb.addEventListener('click',openClockMode);
-  await syncLoad();
-  renderTasks();renderEventList();renderCalendar();renderDeadlines();
-  tickClock();setInterval(tickClock,1000);handleResize();
-}
-
-init();
-})();
+window.toggleTerminal = toggleTerminal;
+window.toggleTaskDone = toggleTaskDone;
+window.toggleEventDone = toggleEventDone;
+window.toggleDeadlineDone = toggleDeadlineDone;
+window.termRun = termRun;
