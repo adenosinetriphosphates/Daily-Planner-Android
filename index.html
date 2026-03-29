@@ -10,7 +10,7 @@
 <title>Daily Planner</title>
 <link rel="manifest" href="manifest.json">
 <meta name="apple-mobile-web-app-title" content="Planner">
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -189,7 +189,7 @@
 
   <!-- TERMINAL TOGGLE BUTTON -->
   <button class="terminal-toggle" id="termToggle" onclick="toggleTerminal()">
-    <span style="opacity:0.5;">$</span> terminal
+    <span class="term-dollar" style="opacity:0.7;">$</span><span style="color:#3a6e4a;margin-left:2px;">_</span>&nbsp;terminal
   </button>
 
   <!-- TERMINAL PANEL -->
@@ -198,39 +198,17 @@
       <div class="terminal-dot td-red" onclick="toggleTerminal()" style="cursor:pointer;" title="Close"></div>
       <div class="terminal-dot td-yellow"></div>
       <div class="terminal-dot td-green"></div>
-      <div class="terminal-title">planner — terminal</div>
+      <div class="terminal-title">planner — bash</div>
       <button class="terminal-close-btn" onclick="toggleTerminal()">✕</button>
     </div>
     <div class="terminal-output" id="termOutput"></div>
     <div class="terminal-input-row">
-      <span class="terminal-prompt-label">planner&gt;</span>
-      <input class="terminal-input" id="termInput" placeholder="type 'help' for commands" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+      <span class="terminal-prompt-label"><span class="term-u">user</span><span class="term-at">@</span><span class="term-h">planner</span><span class="term-sep">:</span><span class="term-path">~</span><span class="term-dollar">$</span></span>
+      <input class="terminal-input" id="termInput" placeholder="" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
     </div>
   </div>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-
-  <!-- TERMINAL TOGGLE BUTTON -->
-  <button class="terminal-toggle" id="termToggle" onclick="toggleTerminal()">
-    <span style="opacity:0.5;">$</span> terminal
-  </button>
-
-  <!-- TERMINAL PANEL -->
-  <div class="terminal-panel" id="termPanel">
-    <div class="terminal-titlebar" id="termTitlebar">
-      <div class="terminal-dot td-red" onclick="toggleTerminal()" style="cursor:pointer;" title="Close"></div>
-      <div class="terminal-dot td-yellow"></div>
-      <div class="terminal-dot td-green"></div>
-      <div class="terminal-title">planner — terminal</div>
-      <button class="terminal-close-btn" onclick="toggleTerminal()">✕</button>
-    </div>
-    <div class="terminal-output" id="termOutput"></div>
-    <div class="terminal-input-row">
-      <span class="terminal-prompt-label">planner&gt;</span>
-      <input class="terminal-input" id="termInput" placeholder="type 'help' for commands" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-    </div>
-  </div>
-
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <script src="app.js"></script>
 <script>
