@@ -186,7 +186,51 @@
   </div><!-- end app-body -->
 </div>
 
+
+  <!-- TERMINAL TOGGLE BUTTON -->
+  <button class="terminal-toggle" id="termToggle" onclick="toggleTerminal()">
+    <span style="opacity:0.5;">$</span> terminal
+  </button>
+
+  <!-- TERMINAL PANEL -->
+  <div class="terminal-panel" id="termPanel">
+    <div class="terminal-titlebar" id="termTitlebar">
+      <div class="terminal-dot td-red" onclick="toggleTerminal()" style="cursor:pointer;" title="Close"></div>
+      <div class="terminal-dot td-yellow"></div>
+      <div class="terminal-dot td-green"></div>
+      <div class="terminal-title">planner — terminal</div>
+      <button class="terminal-close-btn" onclick="toggleTerminal()">✕</button>
+    </div>
+    <div class="terminal-output" id="termOutput"></div>
+    <div class="terminal-input-row">
+      <span class="terminal-prompt-label">planner&gt;</span>
+      <input class="terminal-input" id="termInput" placeholder="type 'help' for commands" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+    </div>
+  </div>
+
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+
+  <!-- TERMINAL TOGGLE BUTTON -->
+  <button class="terminal-toggle" id="termToggle" onclick="toggleTerminal()">
+    <span style="opacity:0.5;">$</span> terminal
+  </button>
+
+  <!-- TERMINAL PANEL -->
+  <div class="terminal-panel" id="termPanel">
+    <div class="terminal-titlebar" id="termTitlebar">
+      <div class="terminal-dot td-red" onclick="toggleTerminal()" style="cursor:pointer;" title="Close"></div>
+      <div class="terminal-dot td-yellow"></div>
+      <div class="terminal-dot td-green"></div>
+      <div class="terminal-title">planner — terminal</div>
+      <button class="terminal-close-btn" onclick="toggleTerminal()">✕</button>
+    </div>
+    <div class="terminal-output" id="termOutput"></div>
+    <div class="terminal-input-row">
+      <span class="terminal-prompt-label">planner&gt;</span>
+      <input class="terminal-input" id="termInput" placeholder="type 'help' for commands" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+    </div>
+  </div>
+
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <script src="app.js"></script>
 <script>

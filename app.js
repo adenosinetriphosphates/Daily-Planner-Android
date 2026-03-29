@@ -675,7 +675,13 @@ function updateClockMode() {
   const h=now.getHours(),m=now.getMinutes(),s=now.getSeconds();
   const ampm=h>=12?'PM':'AM',h12=h%12||12;
   const pad=n=>String(n).padStart(2,'0');
-  document.getElementById('cmTime').childNodes[0].textContent=`${pad(h12)}:${pad(m)}:${pad(s)}`;
+  const cmTimeEl=document.getElementById('cmTime');
+  if(cmTimeEl){
+    // Find the text node (not the ampm span) and update it
+    for(const node of cmTimeEl.childNodes){
+      if(node.nodeType===3){ node.textContent=`${pad(h12)}:${pad(m)}:${pad(s)}`; break; }
+    }
+  }
   document.getElementById('cmAmpm').textContent=ampm;
   document.getElementById('cmDate').textContent=DAYS[now.getDay()]+', '+MONTHS[now.getMonth()]+' '+now.getDate()+', '+now.getFullYear();
   const nowMins=h*60+m;
@@ -794,7 +800,8 @@ function tickClock() {
   const now=new Date(),h=now.getHours(),m=now.getMinutes(),s=now.getSeconds();
   const ampm=h>=12?'PM':'AM',h12=h%12||12;
   const pad=n=>String(n).padStart(2,'0');
-  document.getElementById('clockTime').childNodes[0].textContent=`${pad(h12)}:${pad(m)}:${pad(s)}`;
+  const ckEl=document.getElementById('clockTime');
+  if(ckEl){ for(const node of ckEl.childNodes){ if(node.nodeType===3){ node.textContent=`${pad(h12)}:${pad(m)}:${pad(s)}`; break; } } }
   document.getElementById('clockAmpm').textContent=ampm;
   document.getElementById('clockDate').textContent=DAYS[now.getDay()]+', '+MONTHS[now.getMonth()]+' '+now.getDate()+', '+now.getFullYear();
   checkAutoStart(now);checkAlarms(now);checkDeadlineWarnings(now);
@@ -858,3 +865,524 @@ async function init() {
 
 init();
 })();
+
+// ═══════════════════════════════════════════════════
+// ── TERMINAL ──
+// ═══════════════════════════════════════════════════
+let termHistory = [], termHistIdx = -1, termOpen = false;
+
+function toggleTerminal() {
+  termOpen = !termOpen;
+  const panel = document.getElementById('termPanel');
+  panel.classList.toggle('open', termOpen);
+  if (termOpen) {
+    if (!document.getElementById('termOutput').children.length) termWelcome();
+    document.getElementById('termInput').focus();
+  }
+}
+
+function termWelcome() {
+  termPrint('head', '  Daily Planner Terminal  ');
+  termPrint('dim',  '  type help for commands  ');
+  termPrint('dim',  '──────────────────────────');
+}
+
+function termPrint(cls, text) {
+  const out = document.getElementById('termOutput');
+  const el = document.createElement('div');
+  el.className = 't-line t-' + cls;
+  el.textContent = text;
+  out.appendChild(el);
+  out.scrollTop = out.scrollHeight;
+}
+
+function termEcho(cmd, result) {
+  termPrint('prompt', 'planner> ' + cmd);
+  if (Array.isArray(result)) result.forEach(([c,t]) => termPrint(c,t));
+  else if (result) termPrint('out', result);
+}
+
+function termError(msg) { termPrint('err', '✕  ' + msg); }
+function termOk(msg)    { termPrint('ok',  '✓  ' + msg); }
+function termWarn(msg)  { termPrint('warn','⚠  ' + msg); }
+
+// ── PARSE HELPERS ──
+function parseArgs(str) {
+  // split on spaces but keep quoted strings together
+  const args = [];
+  let cur = '', inQ = false, q = '';
+  for (const ch of str) {
+    if ((ch === '"' || ch === "'") && !inQ) { inQ = true; q = ch; }
+    else if (ch === q && inQ)               { inQ = false; q = ''; }
+    else if (ch === ' ' && !inQ)            { if (cur) { args.push(cur); cur = ''; } }
+    else cur += ch;
+  }
+  if (cur) args.push(cur);
+  return args;
+}
+
+function parseTimeArg(str) {
+  // Accepts: 14:30, 2:30pm, 2pm, 14h30, 230pm
+  if (!str) return '';
+  str = str.toLowerCase().trim();
+  const ampm = str.includes('am') ? 'am' : str.includes('pm') ? 'pm' : null;
+  str = str.replace(/[ap]m/, '');
+  let h, m = 0;
+  if (str.includes(':')) { [h, m] = str.split(':').map(Number); }
+  else if (str.length <= 2) { h = parseInt(str); }
+  else { h = parseInt(str.slice(0, -2)); m = parseInt(str.slice(-2)); }
+  if (ampm === 'pm' && h < 12) h += 12;
+  if (ampm === 'am' && h === 12) h = 0;
+  return `${String(h).padStart(2,'0')}:${String(m||0).padStart(2,'0')}`;
+}
+
+function parseDateArg(str) {
+  // Accepts: today, tomorrow, mon, 2025-12-25, 25/12, dec25, 25dec
+  if (!str) return toDateStr(new Date());
+  str = str.toLowerCase().trim();
+  const now = new Date();
+  if (str === 'today')    return toDateStr(now);
+  if (str === 'tomorrow') { const d = new Date(now); d.setDate(d.getDate()+1); return toDateStr(d); }
+  const days = ['sun','mon','tue','wed','thu','fri','sat'];
+  const dayIdx = days.indexOf(str.slice(0,3));
+  if (dayIdx !== -1) {
+    const d = new Date(now); let diff = dayIdx - d.getDay();
+    if (diff <= 0) diff += 7;
+    d.setDate(d.getDate() + diff);
+    return toDateStr(d);
+  }
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  // dec25 or 25dec
+  for (let i = 0; i < months.length; i++) {
+    const mo = months[i];
+    if (str.startsWith(mo)) { const day = parseInt(str.slice(3)); return `${now.getFullYear()}-${String(i+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`; }
+    if (str.endsWith(mo))   { const day = parseInt(str.slice(0,-3)); return `${now.getFullYear()}-${String(i+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`; }
+  }
+  if (str.includes('-')) return str; // already yyyy-mm-dd
+  if (str.includes('/')) { const [d,m] = str.split('/'); return `${now.getFullYear()}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`; }
+  return toDateStr(now);
+}
+
+function findTask(q)     { return tasks.find(t => t.id===q || t.name.toLowerCase().includes(q.toLowerCase())); }
+function findEvent(q)    { return events.find(e => e.id===q || e.name.toLowerCase().includes(q.toLowerCase())); }
+function findDeadline(q) { return deadlines.find(d => d.id===q || d.name.toLowerCase().includes(q.toLowerCase())); }
+function findAlarm(q)    { return alarms.find(a => a.id===q || a.label.toLowerCase().includes(q.toLowerCase()) || a.time===q); }
+
+// ── COMMAND ROUTER ──
+function termRun(raw) {
+  raw = raw.trim();
+  if (!raw) return;
+  termHistory.unshift(raw);
+  termHistIdx = -1;
+  const parts = parseArgs(raw);
+  const cmd = parts[0]?.toLowerCase();
+  const sub = parts[1]?.toLowerCase();
+  const rest = parts.slice(2);
+
+  try {
+    switch (cmd) {
+      case 'help': case '?': cmdHelp(sub); break;
+      case 'task': case 't': cmdTask(sub, rest); break;
+      case 'event': case 'ev': cmdEvent(sub, rest); break;
+      case 'deadline': case 'dl': cmdDeadline(sub, rest); break;
+      case 'alarm': case 'al': cmdAlarm(sub, rest); break;
+      case 'ls': case 'list': cmdList(sub); break;
+      case 'rm': case 'del': case 'delete': cmdDelete(sub, rest); break;
+      case 'edit': cmdEdit(sub, rest); break;
+      case 'start': cmdTimerCtl('start', sub); break;
+      case 'stop': case 'pause': cmdTimerCtl('stop', sub); break;
+      case 'reset': cmdTimerCtl('reset', sub); break;
+      case 'done': cmdTimerCtl('done', sub); break;
+      case 'clock': openClockMode(); termOk('Clock mode opened'); break;
+      case 'clear': case 'cls': document.getElementById('termOutput').innerHTML = ''; break;
+      case 'sync': syncLoad().then(()=>termOk('Synced with Firebase')).catch(()=>termError('Sync failed')); break;
+      default: termError(`Unknown command: ${cmd}. Type 'help' for commands.`);
+    }
+  } catch(e) { termError(e.message); }
+}
+
+// ── HELP ──
+function cmdHelp(topic) {
+  if (!topic) {
+    termPrint('head', 'Commands:');
+    const cmds = [
+      ['task add',      'Add a task'],
+      ['task ls',       'List tasks'],
+      ['task edit',     'Edit a task'],
+      ['task rm',       'Delete a task'],
+      ['event add',     'Add an event'],
+      ['event ls',      'List events'],
+      ['event edit',    'Edit an event'],
+      ['event rm',      'Delete an event'],
+      ['deadline add',  'Add a deadline'],
+      ['deadline ls',   'List deadlines'],
+      ['deadline edit', 'Edit a deadline'],
+      ['deadline rm',   'Delete a deadline'],
+      ['alarm add',     'Add an alarm'],
+      ['alarm ls',      'List alarms'],
+      ['alarm rm',      'Delete an alarm'],
+      ['start <name>',  'Start task timer'],
+      ['stop <name>',   'Pause task timer'],
+      ['reset <name>',  'Reset task timer'],
+      ['ls',            'List everything'],
+      ['clear',         'Clear terminal'],
+      ['sync',          'Force Firebase sync'],
+      ['clock',         'Open clock mode'],
+    ];
+    cmds.forEach(([c,d]) => termPrint('out', `  ${c.padEnd(20)} ${d}`));
+    termPrint('dim', "  Type 'help task' for task syntax");
+    return;
+  }
+  const helpText = {
+    task: [
+      ['head','task add <name> [options]'],
+      ['out', '  Options:'],
+      ['out', '  -p low|medium|high|critical   priority (default: medium)'],
+      ['out', '  -d <minutes>                  duration (default: 30)'],
+      ['out', '  -t <time>                     start time e.g. 14:30, 2pm'],
+      ['out', ''],
+      ['out', '  Examples:'],
+      ['out', "  task add 'Study chem' -p high -d 60 -t 3pm"],
+      ['out', "  task add Robotics -d 90 -t 14:30"],
+      ['out', ''],
+      ['head','task edit <name> [options]  (same options as add)'],
+      ['head','task rm <name>'],
+      ['head','task ls'],
+    ],
+    event: [
+      ['head','event add <name> [options]'],
+      ['out', '  Options:'],
+      ['out', '  -p low|medium|high|critical'],
+      ['out', '  -d <minutes>                  duration'],
+      ['out', '  -t <time>                     time'],
+      ['out', '  -s once|daily|weekdays|custom schedule'],
+      ['out', '  --date <date>                 for one-time events'],
+      ['out', ''],
+      ['out', '  Date formats: today, tomorrow, mon, dec25, 2025-12-25'],
+      ['out', "  event add 'Team meeting' -t 10am -d 60 -s weekdays"],
+      ['out', "  event add 'Dentist' -t 2pm --date tomorrow"],
+    ],
+    deadline: [
+      ['head','deadline add <name> [options]'],
+      ['out', '  Options:'],
+      ['out', '  -p low|medium|high|critical'],
+      ['out', '  --date <date>  (required)'],
+      ['out', ''],
+      ['out', "  deadline add 'Chem lab report' --date friday -p high"],
+      ['out', "  deadline add 'FLL submission' --date dec25"],
+    ],
+    alarm: [
+      ['head','alarm add <time> [label]'],
+      ['out', '  alarm add 7:30am Wake up'],
+      ['out', '  alarm add 14:00 Lunch'],
+      ['head','alarm rm <time or label>'],
+      ['head','alarm ls'],
+    ],
+  };
+  const lines = helpText[topic];
+  if (!lines) { termError(`No help for '${topic}'`); return; }
+  lines.forEach(([c,t]) => termPrint(c,t));
+}
+
+// ── TASK COMMANDS ──
+function cmdTask(sub, args) {
+  if (sub === 'add' || sub === 'a') {
+    const name = args.shift();
+    if (!name) { termError('Name required: task add <name>'); return; }
+    const opts = parseOpts(args);
+    const task = {
+      id: uid(), name,
+      importance: normalizeImp(opts['-p'] || opts['--priority'] || 'medium'),
+      duration: parseInt(opts['-d'] || opts['--duration'] || '30') || 30,
+      startTime: opts['-t'] || opts['--time'] ? parseTimeArg(opts['-t'] || opts['--time']) : '',
+      elapsed: 0, running: false, done: false
+    };
+    tasks.push(task); save(); renderTasks(); renderCalendar(); renderTimeline();
+    termOk(`Task added: "${name}" [${task.importance}] ${task.duration}min${task.startTime?' @ '+task.startTime:''}`);
+
+  } else if (sub === 'rm' || sub === 'del' || sub === 'delete') {
+    const q = args.join(' '); const t = findTask(q);
+    if (!t) { termError(`Task not found: ${q}`); return; }
+    stopTimer(t.id); tasks = tasks.filter(x => x.id !== t.id);
+    save(); renderTasks(); renderCalendar(); renderTimeline();
+    termOk(`Deleted task: "${t.name}"`);
+
+  } else if (sub === 'edit' || sub === 'e') {
+    const q = args.shift(); const t = findTask(q);
+    if (!t) { termError(`Task not found: ${q}`); return; }
+    const opts = parseOpts(args);
+    if (opts['-n'] || opts['--name'])     t.name       = opts['-n'] || opts['--name'];
+    if (opts['-p'] || opts['--priority']) t.importance = normalizeImp(opts['-p'] || opts['--priority']);
+    if (opts['-d'] || opts['--duration']) t.duration   = parseInt(opts['-d'] || opts['--duration']) || t.duration;
+    if (opts['-t'] || opts['--time'])     t.startTime  = parseTimeArg(opts['-t'] || opts['--time']);
+    t.elapsed = 0; stopTimer(t.id); save(); renderTasks(); renderCalendar(); renderTimeline();
+    termOk(`Updated task: "${t.name}"`);
+
+  } else if (sub === 'ls' || sub === 'list' || !sub) {
+    if (!tasks.length) { termWarn('No tasks'); return; }
+    termPrint('head', `Tasks (${tasks.length}):`);
+    tasks.forEach(t => {
+      const timer = t.running ? ` ▶ ${fmtTime(Math.max(t.duration*60-(t.elapsed||0),0))}` : '';
+      termPrint('out', `  ${t.name.padEnd(24)} [${t.importance.padEnd(8)}] ${t.duration}min${t.startTime?' @'+t.startTime:''}${timer}`);
+    });
+  } else { termError(`Unknown task subcommand: ${sub}`); }
+}
+
+// ── EVENT COMMANDS ──
+function cmdEvent(sub, args) {
+  if (sub === 'add' || sub === 'a') {
+    const name = args.shift();
+    if (!name) { termError('Name required: event add <name>'); return; }
+    const opts = parseOpts(args);
+    const schedType = opts['-s'] || opts['--schedule'] || 'once';
+    let schedDays = [];
+    if (schedType === 'weekdays') schedDays = [1,2,3,4,5];
+    else if (schedType === 'daily') schedDays = [0,1,2,3,4,5,6];
+    const ev = {
+      id: uid(), name,
+      importance: normalizeImp(opts['-p'] || opts['--priority'] || 'medium'),
+      duration: parseInt(opts['-d'] || opts['--duration'] || '60') || 60,
+      time: opts['-t'] || opts['--time'] ? parseTimeArg(opts['-t'] || opts['--time']) : '',
+      scheduleType: schedType,
+      date: schedType === 'once' ? parseDateArg(opts['--date'] || opts['-dt'] || 'today') : '',
+      schedDays,
+      recurring: !!(opts['--recurring'] || opts['-r']),
+      recurWeeks: parseInt(opts['--every'] || '1') || 1
+    };
+    events.push(ev); save(); renderEventList(); renderCalendar(); renderTimeline();
+    termOk(`Event added: "${name}" [${ev.scheduleType}]${ev.time?' @ '+ev.time:''}${ev.date?' on '+ev.date:''}`);
+
+  } else if (sub === 'rm' || sub === 'del' || sub === 'delete') {
+    const q = args.join(' '); const ev = findEvent(q);
+    if (!ev) { termError(`Event not found: ${q}`); return; }
+    events = events.filter(e => e.id !== ev.id);
+    save(); renderEventList(); renderCalendar(); renderTimeline();
+    termOk(`Deleted event: "${ev.name}"`);
+
+  } else if (sub === 'edit' || sub === 'e') {
+    const q = args.shift(); const ev = findEvent(q);
+    if (!ev) { termError(`Event not found: ${q}`); return; }
+    const opts = parseOpts(args);
+    if (opts['-n'] || opts['--name'])     ev.name       = opts['-n'] || opts['--name'];
+    if (opts['-p'] || opts['--priority']) ev.importance = normalizeImp(opts['-p'] || opts['--priority']);
+    if (opts['-d'] || opts['--duration']) ev.duration   = parseInt(opts['-d'] || opts['--duration']) || ev.duration;
+    if (opts['-t'] || opts['--time'])     ev.time       = parseTimeArg(opts['-t'] || opts['--time']);
+    if (opts['--date'] || opts['-dt'])    ev.date       = parseDateArg(opts['--date'] || opts['-dt']);
+    save(); renderEventList(); renderCalendar(); renderTimeline();
+    termOk(`Updated event: "${ev.name}"`);
+
+  } else if (sub === 'ls' || sub === 'list' || !sub) {
+    if (!events.length) { termWarn('No events'); return; }
+    termPrint('head', `Events (${events.length}):`);
+    events.forEach(ev => {
+      const sched = ev.scheduleType === 'once' ? ev.date : ev.scheduleType;
+      termPrint('out', `  ${ev.name.padEnd(24)} [${ev.importance.padEnd(8)}] ${ev.duration}min${ev.time?' @'+ev.time:''} ${sched}`);
+    });
+  } else { termError(`Unknown event subcommand: ${sub}`); }
+}
+
+// ── DEADLINE COMMANDS ──
+function cmdDeadline(sub, args) {
+  if (sub === 'add' || sub === 'a') {
+    const name = args.shift();
+    if (!name) { termError('Name required: deadline add <name>'); return; }
+    const opts = parseOpts(args);
+    const date = parseDateArg(opts['--date'] || opts['-dt'] || opts['-d'] || '');
+    const dl = { id: uid(), name, importance: normalizeImp(opts['-p'] || opts['--priority'] || 'medium'), date };
+    deadlines.push(dl); saveDeadlines(); renderDeadlines(); renderCalendar();
+    const cd = deadlineCountdown(date);
+    termOk(`Deadline added: "${name}" due ${date} (${cd.label})`);
+
+  } else if (sub === 'rm' || sub === 'del' || sub === 'delete') {
+    const q = args.join(' '); const dl = findDeadline(q);
+    if (!dl) { termError(`Deadline not found: ${q}`); return; }
+    deadlines = deadlines.filter(d => d.id !== dl.id);
+    saveDeadlines(); renderDeadlines(); renderCalendar();
+    termOk(`Deleted deadline: "${dl.name}"`);
+
+  } else if (sub === 'edit' || sub === 'e') {
+    const q = args.shift(); const dl = findDeadline(q);
+    if (!dl) { termError(`Deadline not found: ${q}`); return; }
+    const opts = parseOpts(args);
+    if (opts['-n'] || opts['--name'])     dl.name       = opts['-n'] || opts['--name'];
+    if (opts['-p'] || opts['--priority']) dl.importance = normalizeImp(opts['-p'] || opts['--priority']);
+    if (opts['--date'] || opts['-dt'] || opts['-d']) dl.date = parseDateArg(opts['--date'] || opts['-dt'] || opts['-d']);
+    saveDeadlines(); renderDeadlines(); renderCalendar();
+    termOk(`Updated deadline: "${dl.name}"`);
+
+  } else if (sub === 'ls' || sub === 'list' || !sub) {
+    if (!deadlines.length) { termWarn('No deadlines'); return; }
+    termPrint('head', `Deadlines (${deadlines.length}):`);
+    const sorted = [...deadlines].sort((a,b) => a.date.localeCompare(b.date));
+    sorted.forEach(dl => {
+      const cd = deadlineCountdown(dl.date);
+      termPrint('out', `  ${dl.name.padEnd(24)} [${dl.importance.padEnd(8)}] ${dl.date}  ${cd.label}`);
+    });
+  } else { termError(`Unknown deadline subcommand: ${sub}`); }
+}
+
+// ── ALARM COMMANDS ──
+function cmdAlarm(sub, args) {
+  if (sub === 'add' || sub === 'a') {
+    const timeRaw = args.shift();
+    if (!timeRaw) { termError('Time required: alarm add <time> [label]'); return; }
+    const time = parseTimeArg(timeRaw);
+    const label = args.join(' ') || 'Alarm';
+    alarms.push({ id: uid(), time, label, on: true, fired: false });
+    saveAlarms(); renderAlarms();
+    termOk(`Alarm set: ${time} — "${label}"`);
+
+  } else if (sub === 'rm' || sub === 'del') {
+    const q = args.join(' '); const al = findAlarm(q);
+    if (!al) { termError(`Alarm not found: ${q}`); return; }
+    alarms = alarms.filter(a => a.id !== al.id);
+    saveAlarms(); renderAlarms();
+    termOk(`Deleted alarm: ${al.time} "${al.label}"`);
+
+  } else if (sub === 'ls' || sub === 'list' || !sub) {
+    if (!alarms.length) { termWarn('No alarms'); return; }
+    termPrint('head', `Alarms (${alarms.length}):`);
+    alarms.forEach(a => termPrint('out', `  ${a.time}  ${a.label.padEnd(20)} ${a.on ? '[ON]' : '[OFF]'}`));
+  } else { termError(`Unknown alarm subcommand: ${sub}`); }
+}
+
+// ── LIST ALL ──
+function cmdList(sub) {
+  const target = sub || 'all';
+  if (target === 'all' || target === 'tasks' || target === 't') {
+    termPrint('head', `Tasks (${tasks.length}):`);
+    if (!tasks.length) termPrint('dim','  (none)');
+    tasks.forEach(t => termPrint('out', `  ${t.name.padEnd(24)} [${t.importance.padEnd(8)}] ${t.duration}min${t.startTime?' @'+t.startTime:''}${t.running?' ▶':''}`));
+  }
+  if (target === 'all' || target === 'events' || target === 'ev') {
+    termPrint('head', `Events (${events.length}):`);
+    if (!events.length) termPrint('dim','  (none)');
+    events.forEach(ev => { const s = ev.scheduleType==='once'?ev.date:ev.scheduleType; termPrint('out', `  ${ev.name.padEnd(24)} [${ev.importance.padEnd(8)}] ${ev.duration}min${ev.time?' @'+ev.time:''} ${s}`); });
+  }
+  if (target === 'all' || target === 'deadlines' || target === 'dl') {
+    const sorted = [...deadlines].sort((a,b)=>a.date.localeCompare(b.date));
+    termPrint('head', `Deadlines (${deadlines.length}):`);
+    if (!sorted.length) termPrint('dim','  (none)');
+    sorted.forEach(dl => { const cd=deadlineCountdown(dl.date); termPrint('out', `  ${dl.name.padEnd(24)} [${dl.importance.padEnd(8)}] ${dl.date}  ${cd.label}`); });
+  }
+  if (target === 'all' || target === 'alarms' || target === 'al') {
+    termPrint('head', `Alarms (${alarms.length}):`);
+    if (!alarms.length) termPrint('dim','  (none)');
+    alarms.forEach(a => termPrint('out', `  ${a.time}  ${a.label.padEnd(20)} ${a.on?'[ON]':'[OFF]'}`));
+  }
+}
+
+// ── DELETE (shorthand) ──
+function cmdDelete(sub, args) {
+  // rm task <name> | rm event <name> | rm deadline <name> | rm alarm <name>
+  const q = args.join(' ');
+  if (sub === 'task' || sub === 't')         { const t=findTask(q); if(!t){termError('Task not found: '+q);return;} stopTimer(t.id);tasks=tasks.filter(x=>x.id!==t.id);save();renderTasks();renderCalendar();termOk('Deleted task: "'+t.name+'"'); }
+  else if (sub === 'event' || sub === 'ev')  { const e=findEvent(q); if(!e){termError('Event not found: '+q);return;} events=events.filter(x=>x.id!==e.id);save();renderEventList();renderCalendar();termOk('Deleted event: "'+e.name+'"'); }
+  else if (sub === 'deadline' || sub === 'dl'){ const d=findDeadline(q); if(!d){termError('Deadline not found: '+q);return;} deadlines=deadlines.filter(x=>x.id!==d.id);saveDeadlines();renderDeadlines();renderCalendar();termOk('Deleted deadline: "'+d.name+'"'); }
+  else if (sub === 'alarm' || sub === 'al')  { const a=findAlarm(q); if(!a){termError('Alarm not found: '+q);return;} alarms=alarms.filter(x=>x.id!==a.id);saveAlarms();renderAlarms();termOk('Deleted alarm: '+a.time+' "'+a.label+'"'); }
+  else termError('Specify type: rm task|event|deadline|alarm <name>');
+}
+
+// ── EDIT (shorthand) ──
+function cmdEdit(sub, args) {
+  const q = args.shift();
+  if (sub === 'task' || sub === 't')          cmdTask('edit', [q, ...args]);
+  else if (sub === 'event' || sub === 'ev')   cmdEvent('edit', [q, ...args]);
+  else if (sub === 'deadline' || sub === 'dl') cmdDeadline('edit', [q, ...args]);
+  else termError('Specify type: edit task|event|deadline <name> [options]');
+}
+
+// ── TIMER CONTROLS ──
+function cmdTimerCtl(action, q) {
+  if (!q) { termError(`Specify task name: ${action} <name>`); return; }
+  const t = findTask(q);
+  if (!t) { termError(`Task not found: ${q}`); return; }
+  if (action === 'start') { startTimer(t.id); termOk(`Started: "${t.name}"`); }
+  else if (action === 'stop') { stopTimer(t.id); termOk(`Paused: "${t.name}"`); }
+  else if (action === 'reset') { resetTimer(t.id); termOk(`Reset: "${t.name}"`); }
+  else if (action === 'done') { stopTimer(t.id); t.elapsed = t.duration*60; save(); renderTasks(); termOk(`Marked done: "${t.name}"`); }
+}
+
+// ── OPTION PARSER ──
+function parseOpts(args) {
+  const opts = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith('-')) { opts[args[i]] = args[i+1] || true; i++; }
+  }
+  return opts;
+}
+
+function normalizeImp(s) {
+  if (!s) return 'medium';
+  s = s.toLowerCase();
+  if (s === 'c' || s === 'crit' || s === 'critical') return 'critical';
+  if (s === 'h' || s === 'hi')   return 'high';
+  if (s === 'l' || s === 'lo')   return 'low';
+  return 'medium';
+}
+
+// ── KEYBOARD HANDLER ──
+function termKeydown(e) {
+  const inp = document.getElementById('termInput');
+  if (e.key === 'Enter') {
+    const val = inp.value.trim();
+    inp.value = '';
+    if (val) termRun(val);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (termHistIdx < termHistory.length - 1) { termHistIdx++; inp.value = termHistory[termHistIdx]; }
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (termHistIdx > 0) { termHistIdx--; inp.value = termHistory[termHistIdx]; }
+    else { termHistIdx = -1; inp.value = ''; }
+  } else if (e.key === 'Tab') {
+    e.preventDefault();
+    // Tab completion for commands
+    const cmds = ['task','event','deadline','alarm','ls','clear','sync','clock','help','start','stop','reset','done'];
+    const cur = inp.value.toLowerCase();
+    const match = cmds.find(c => c.startsWith(cur));
+    if (match) inp.value = match + ' ';
+  } else if (e.key === '`' || (e.key === 't' && e.ctrlKey)) {
+    e.preventDefault(); toggleTerminal();
+  }
+}
+
+// ── DRAG TO REPOSITION ──
+function initTermDrag() {
+  const panel = document.getElementById('termPanel');
+  const bar   = document.getElementById('termTitlebar');
+  if (!bar || !panel) return;
+  let startX, startY, startR, startB;
+  bar.addEventListener('mousedown', e => {
+    const rect = panel.getBoundingClientRect();
+    startX = e.clientX; startY = e.clientY;
+    startR = window.innerWidth  - rect.right;
+    startB = window.innerHeight - rect.bottom;
+    panel.style.transition = 'none';
+    const onMove = ev => {
+      const dx = startX - ev.clientX, dy = startY - ev.clientY;
+      panel.style.right  = Math.max(0, startR + dx) + 'px';
+      panel.style.bottom = Math.max(0, startB + dy) + 'px';
+    };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// ── KEYBOARD SHORTCUT: backtick to toggle ──
+document.addEventListener('keydown', e => {
+  if (e.key === '`' && !e.ctrlKey && !e.metaKey && document.activeElement.id !== 'termInput') {
+    toggleTerminal();
+  }
+});
+
+// ── INIT TERMINAL ──
+window.addEventListener('load', () => {
+  const inp = document.getElementById('termInput');
+  if (inp) inp.addEventListener('keydown', termKeydown);
+  initTermDrag();
+});
+
+window.toggleTerminal = toggleTerminal;
+window.termRun = termRun;
