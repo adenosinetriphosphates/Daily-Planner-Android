@@ -1036,11 +1036,11 @@
     <div class="clock-sep"></div>
     <span id="syncStatus" style="font-size:11px;color:rgba(255,255,255,0.6);padding:0 4px;">☁ Connecting…</span>
     <div class="clock-sep"></div>
-    <button class="wakelock-btn" id="wakeLockBtn" onclick="toggleWakeLock()"><div class="wakelock-dot" id="wlDot"></div><span id="wlLabel">Keep awake</span></button>
+    <button class="wakelock-btn" id="wakeLockBtn" id="wakeLockBtnWire"><div class="wakelock-dot" id="wlDot"></div><span id="wlLabel">Keep awake</span></button>
     <div class="clock-sep"></div>
-    <button class="orient-btn" id="orientBtn" onclick="toggleOrientation()">⟳ Lock landscape</button>
+    <button class="orient-btn" id="orientBtn" id="orientBtnWire">⟳ Lock landscape</button>
     <div class="clock-sep"></div>
-    <button class="clock-mode-btn" onclick="openClockMode()">🕐 Clock</button>
+    <button class="clock-mode-btn" id="clockModeBtnWire">🕐 Clock</button>
   </div>
 
   <div class="topbar">
@@ -2159,6 +2159,30 @@ function handleResize() {
 
 window.addEventListener('resize', handleResize);
 
+
+// ── Expose functions to global scope (required for inline onclick in type=module) ──
+window.addTask = addTask;
+window.deleteTask = deleteTask;
+window.startTimer = startTimer;
+window.stopTimer = stopTimer;
+window.resetTimer = resetTimer;
+window.toggleEditTask = toggleEditTask;
+window.saveEditTask = saveEditTask;
+window.toggleEditEvent = toggleEditEvent;
+window.saveEditEvent = saveEditEvent;
+window.addEvent = addEvent;
+window.deleteEvent = deleteEvent;
+window.toggleEventForm = toggleEventForm;
+window.scheduleTypeChange = scheduleTypeChange;
+window.selectDay = selectDay;
+window.calPrev = calPrev;
+window.calNext = calNext;
+window.switchMain = switchMain;
+window.mobileTab = mobileTab;
+window.toggleWakeLock = toggleWakeLock;
+window.toggleOrientation = toggleOrientation;
+window.openClockMode = openClockMode;
+window.closeClockMode = closeClockMode;
 // Init
 async function init() {
   const today = new Date();
@@ -2172,6 +2196,15 @@ async function init() {
   document.getElementById('evDate').value = toDateStr(today);
 
   selectedDay = today;
+
+
+  // Wire clockbar buttons
+  const ob = document.getElementById('orientBtnWire');
+  if (ob) ob.addEventListener('click', toggleOrientation);
+  const cb = document.getElementById('clockModeBtnWire');
+  if (cb) cb.addEventListener('click', openClockMode);
+  const wb = document.getElementById('wakeLockBtnWire');
+  if (wb) wb.addEventListener('click', toggleWakeLock);
 
   // load from Firebase (falls back to localStorage if offline)
   await syncLoad();
