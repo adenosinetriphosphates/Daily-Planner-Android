@@ -132,35 +132,35 @@
     <!-- CLOCK MODE OVERLAY -->
     <div class="clock-mode-overlay" id="clockOverlay">
       <button class="cm-close" onclick="closeClockMode()">✕</button>
+
+      <!-- TOP: Giant clock -->
       <div class="cm-time" id="cmTime">12:00<span class="cm-ampm" id="cmAmpm">AM</span></div>
       <div class="cm-date" id="cmDate"></div>
-      <div class="cm-weather-row">
-        <div class="cm-weather" id="cmWeatherToday"><div class="cm-weather-loading">Fetching weather…</div></div>
-        <div class="cm-weather" id="cmWeatherTomorrow"><div class="cm-weather-loading">Loading tomorrow…</div></div>
-      </div>
+
+      <!-- DEADLINES STRIP: compact pills row under clock -->
+      <div class="cm-deadline-strip" id="cmDeadlineStrip"></div>
+
       <div class="cm-divider"></div>
-      <div class="cm-tabs">
-        <button class="cm-tab active" id="cmTabActive" onclick="switchCmTab('active')">Active</button>
-        <button class="cm-tab" id="cmTabUpcoming" onclick="switchCmTab('upcoming')">Upcoming</button>
-      </div>
-      <div class="cm-items" id="cmActiveItems"></div>
-      <div class="cm-items" id="cmUpcomingItems" style="display:none;"></div>
-      <div class="cm-divider"></div>
-      <div class="cm-section-label">Deadlines — Today</div>
-      <div class="cm-items" id="cmDeadlineItemsToday"></div>
-      <div class="cm-section-label" style="margin-top:10px;">Deadlines — Tomorrow</div>
-      <div class="cm-items" id="cmDeadlineItemsTomorrow"></div>
-      <div class="cm-divider"></div>
-      <div class="cm-section-label">Alarms</div>
-      <div class="cm-alarm-section">
-        <div class="cm-alarm-add">
-          <input type="time" class="cm-alarm-time-input" id="newAlarmTime" />
-          <input type="text" class="cm-alarm-label-input" id="newAlarmLabel" placeholder="Label (optional)" />
-          <button class="cm-alarm-add-btn" onclick="addAlarm()">+ Add alarm</button>
+
+      <!-- BOTTOM ROW: weather left, upcoming right -->
+      <div class="cm-bottom-row">
+        <!-- Weather column -->
+        <div class="cm-bottom-left">
+          <div class="cm-col-label">Weather</div>
+          <div class="cm-weather-row" style="flex-direction:column;gap:8px;margin-bottom:0;">
+            <div class="cm-weather" id="cmWeatherToday"><div class="cm-weather-loading">Fetching…</div></div>
+            <div class="cm-weather" id="cmWeatherTomorrow"><div class="cm-weather-loading">Tomorrow…</div></div>
+          </div>
         </div>
-        <div class="cm-alarm-list" id="alarmList"></div>
+
+        <!-- Upcoming column -->
+        <div class="cm-bottom-right">
+          <div class="cm-col-label">Upcoming</div>
+          <div id="cmUpcomingPanel" class="cm-upcoming-list"></div>
+        </div>
       </div>
-    </div>
+
+      <div class="cm-divider" style="margin-top:20px;"></div>
 
     <!-- ALARM RING -->
     <div class="alarm-ring-overlay" id="alarmRingOverlay">
