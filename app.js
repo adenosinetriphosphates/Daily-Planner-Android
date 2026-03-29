@@ -682,45 +682,66 @@ function updateClockMode() {
   document.getElementById('cmDate').textContent=DAYS[now.getDay()]+', '+MONTHS[now.getMonth()]+' '+now.getDate()+', '+now.getFullYear();
   const nowMins=h*60+m;
 
-  // Active tasks
-  const activeTasks=tasks.filter(t=>t.running);
-  const activeEl=document.getElementById('cmActiveItems');
-  activeEl.innerHTML=activeTasks.length?activeTasks.map(t=>{
-    const total=t.duration*60,elapsed=t.elapsed||0,pct=Math.min(elapsed/total,1),remaining=Math.max(total-elapsed,0);
-    const tc=pct>0.85?'danger':pct>0.65?'warn':'';
-    const bc=pct>0.85?'#E74C3C':pct>0.65?'#E67E22':pct>0.4?'#F1C40F':'#52e89e';
-    return `<div class="cm-item active-item"><div class="cm-item-dot active"></div><div class="cm-item-info"><div class="cm-item-name">${escHtml(t.name)}</div><div class="cm-item-meta">${t.duration} min · ${impLabel(t.importance)}</div><div class="cm-timer-bar"><div class="cm-timer-fill" style="width:${pct*100}%;background:${bc};"></div></div></div><div class="cm-timer ${tc}">${fmtTime(remaining)}</div></div>`;
-  }).join(''):'<div class="cm-empty">Nothing running right now.</div>';
-
-  // Upcoming
-  const upcoming=[];
-  tasks.forEach(t=>{if(!t.startTime)return;const[th,tm2]=t.startTime.split(':').map(Number);const diff=th*60+tm2-nowMins;if(diff>=0&&diff<=60)upcoming.push({...t,diff,isEvent:false});});
-  events.forEach(ev=>{if(!ev.time||!eventOccursOn(ev,now))return;const[eh,em]=ev.time.split(':').map(Number);const diff=eh*60+em-nowMins;if(diff>=0&&diff<=60)upcoming.push({...ev,diff,isEvent:true});});
-  upcoming.sort((a,b)=>a.diff-b.diff);
-  document.getElementById('cmUpcomingItems').innerHTML=upcoming.length?upcoming.map(item=>`<div class="cm-item"><div class="cm-item-dot ${item.isEvent?'ev':''}"></div><div class="cm-item-info"><div class="cm-item-name">${escHtml(item.name)}</div><div class="cm-item-meta">${item.isEvent?'Event':'Task'} · ${item.duration} min · ${impLabel(item.importance)}</div></div><div style="font-size:13px;color:rgba(255,255,255,0.5);white-space:nowrap;">${item.diff===0?'Now':'in '+item.diff+' min'}</div></div>`).join(''):'<div class="cm-empty">Nothing in the next hour.</div>';
-
-  // Deadlines
-  updateClockModeDeadlines(now);
-}
-
-function updateClockModeDeadlines(now) {
-  const todayEl=document.getElementById('cmDeadlineItemsToday');
-  const tmrwEl =document.getElementById('cmDeadlineItemsTomorrow');
-  if(!todayEl||!tmrwEl) return;
-  const isPM3=now.getHours()>=15;
-  const primary=new Date(now);primary.setHours(0,0,0,0);if(isPM3)primary.setDate(primary.getDate()+1);
-  const secondary=new Date(primary);secondary.setDate(primary.getDate()+1);
-  const ps=toDateStr(primary),ss=toDateStr(secondary);
-  const todayLbl=todayEl.previousElementSibling,tmrwLbl=tmrwEl.previousElementSibling;
-  if(todayLbl) todayLbl.textContent=isPM3?'Deadlines — Tomorrow':'Deadlines — Today';
-  if(tmrwLbl)  tmrwLbl.textContent =isPM3?'Deadlines — Day After':'Deadlines — Tomorrow';
-  function renderList(el,dls,empty){
-    if(!dls.length){el.innerHTML=`<div class="cm-empty">${empty}</div>`;return;}
-    el.innerHTML=dls.map(dl=>{const cd=deadlineCountdown(dl.date);return `<div class="cm-deadline-item"><div class="cm-deadline-dot ${cd.dotCls}"></div><div style="flex:1;"><div class="cm-deadline-name">${escHtml(dl.name)}</div><div class="cm-deadline-sub">${impLabel(dl.importance)}</div></div><div class="cm-deadline-countdown ${cd.cmCls}">${cd.label}</div></div>`;}).join('');
+  // ── Deadline pills under clock ──
+  const dlStrip=document.getElementById('cmDeadlineStrip');
+  if(dlStrip){
+    const today=new Date();today.setHours(0,0,0,0);
+    const sorted=[...deadlines].sort((a,b)=>a.date.localeCompare(b.date));
+    if(!sorted.length){
+      dlStrip.innerHTML='<span class="cm-dl-pill cm-dl-pill-empty">No deadlines</span>';
+    } else {
+      dlStrip.innerHTML=sorted.map(dl=>{
+        const due=new Date(dl.date+'T00:00:00');
+        const diff=Math.round((due-today)/86400000);
+        let pillCls,label;
+        if(diff<0)      { pillCls='cm-dl-pill-overdue'; label=escHtml(dl.name)+' · '+Math.abs(diff)+'d overdue'; }
+        else if(diff===0){ pillCls='cm-dl-pill-today';   label=escHtml(dl.name)+' · today'; }
+        else if(diff<=3) { pillCls='cm-dl-pill-soon';    label=escHtml(dl.name)+' · '+diff+'d'; }
+        else             { pillCls='cm-dl-pill-upcoming'; label=escHtml(dl.name)+' · '+diff+'d'; }
+        return '<span class="cm-dl-pill '+pillCls+'">'+label+'</span>';
+      }).join('');
+    }
   }
-  renderList(todayEl,deadlines.filter(dl=>dl.date===ps), isPM3?'None tomorrow.':'None today.');
-  renderList(tmrwEl, deadlines.filter(dl=>dl.date===ss), isPM3?'None the day after.':'None tomorrow.');
+
+  // ── Weather refresh from cache ──
+  if(weatherCache) renderWeather(weatherCache);
+
+  // ── Upcoming panel (right column) ──
+  const upEl=document.getElementById('cmUpcomingPanel');
+  if(upEl){
+    const rows=[];
+    // Running tasks first
+    tasks.filter(t=>t.running).forEach(t=>{
+      const total=t.duration*60,elapsed=t.elapsed||0,pct=Math.min(elapsed/total,1),remaining=Math.max(total-elapsed,0);
+      const tc=pct>0.85?'danger':pct>0.65?'warn':'';
+      const bc=pct>0.85?'#E74C3C':pct>0.65?'#E67E22':pct>0.4?'#F1C40F':'#52e89e';
+      rows.push({sort:-1,html:`<div class="cm-up-item cm-up-active">
+        <div class="cm-up-dot active"></div>
+        <div class="cm-up-info"><div class="cm-up-name">${escHtml(t.name)}</div><div class="cm-up-sub">${t.duration}m · ${impLabel(t.importance)}</div>
+        <div class="cm-timer-bar" style="margin-top:4px;"><div class="cm-timer-fill" style="width:${pct*100}%;background:${bc};"></div></div></div>
+        <div class="cm-timer ${tc}" style="font-size:16px;">${fmtTime(remaining)}</div></div>`});
+    });
+    // Upcoming 90min tasks
+    tasks.forEach(t=>{
+      if(!t.startTime||t.running) return;
+      const[th,tm2]=t.startTime.split(':').map(Number);
+      const diff=th*60+tm2-nowMins;
+      if(diff>=0&&diff<=90) rows.push({sort:diff,html:`<div class="cm-up-item"><div class="cm-up-dot"></div><div class="cm-up-info"><div class="cm-up-name">${escHtml(t.name)}</div><div class="cm-up-sub">Task · ${t.duration}m · ${impLabel(t.importance)}</div></div><div class="cm-up-time">${diff===0?'Now':'in '+diff+'m'}</div></div>`});
+    });
+    // Upcoming 90min events
+    events.forEach(ev=>{
+      if(!ev.time||!eventOccursOn(ev,now)) return;
+      const[eh,em]=ev.time.split(':').map(Number);
+      const diff=eh*60+em-nowMins;
+      if(diff>=0&&diff<=90) rows.push({sort:diff,html:`<div class="cm-up-item"><div class="cm-up-dot ev"></div><div class="cm-up-info"><div class="cm-up-name">${escHtml(ev.name)}</div><div class="cm-up-sub">Event · ${ev.duration}m · ${impLabel(ev.importance)}</div></div><div class="cm-up-time">${diff===0?'Now':'in '+diff+'m'}</div></div>`});
+    });
+    rows.sort((a,b)=>a.sort-b.sort);
+    upEl.innerHTML=rows.length?rows.map(r=>r.html).join(''):'<div class="cm-empty">Nothing in the next 90 min.</div>';
+  }
 }
+
+
+
 
 // ── WAKE LOCK ──
 let wakeLock=null,silentPingInterval=null,wakeLockHeartbeat=null,wakeLockEnabled=false;
