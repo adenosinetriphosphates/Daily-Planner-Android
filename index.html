@@ -162,6 +162,18 @@
 
       <div class="cm-divider" style="margin-top:20px;"></div>
 
+      <!-- ALARMS -->
+      <div class="cm-section-label">Alarms</div>
+      <div class="cm-alarm-section">
+        <div class="cm-alarm-add">
+          <input type="time" class="cm-alarm-time-input" id="newAlarmTime" />
+          <input type="text" class="cm-alarm-label-input" id="newAlarmLabel" placeholder="Label (optional)" />
+          <button class="cm-alarm-add-btn" onclick="addAlarm()">+ Add alarm</button>
+        </div>
+        <div class="cm-alarm-list" id="alarmList"></div>
+      </div>
+    </div>
+
     <!-- ALARM RING -->
     <div class="alarm-ring-overlay" id="alarmRingOverlay">
       <div class="alarm-ring-icon">⏰</div>
