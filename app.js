@@ -653,9 +653,10 @@ let clockModeOpen=false,clockModeInterval=null,clockModeInterval2=null;
 function openClockMode() {
   clockModeOpen=true;
   document.getElementById('clockOverlay').classList.add('open');
-  updateClockMode(); renderAlarms();
+  renderAlarms();
+  fetchWeather(); // fetch weather first so it populates the cards
+  updateClockMode(); // then render everything
   clockModeInterval=setInterval(updateClockMode,1000);
-  fetchWeather();
   clockModeInterval2=setInterval(fetchWeather,600000);
 }
 
@@ -666,10 +667,7 @@ function closeClockMode() {
 }
 
 function switchCmTab(tab) {
-  document.getElementById('cmActiveItems').style.display   = tab==='active'   ? '' : 'none';
-  document.getElementById('cmUpcomingItems').style.display = tab==='upcoming' ? '' : 'none';
-  document.getElementById('cmTabActive').classList.toggle('active',   tab==='active');
-  document.getElementById('cmTabUpcoming').classList.toggle('active', tab==='upcoming');
+  // tabs removed in new layout — no-op kept for compatibility
 }
 
 function updateClockMode() {
