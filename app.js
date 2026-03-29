@@ -77,12 +77,12 @@ async function syncLoad() {
 
 let _saveTimer = null;
 async function syncSave() {
-  // Always save to localStorage immediately
+  // Immediate localStorage backup
   localStorage.setItem('dp_tasks',     JSON.stringify(tasks));
   localStorage.setItem('dp_events',    JSON.stringify(events));
   localStorage.setItem('dp_deadlines', JSON.stringify(deadlines));
   if (!syncEnabled || !db) return;
-  // Debounce Firebase writes to at most once every 5 seconds
+  // Debounce Firebase to max once per 5 seconds
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(async () => {
     try {
@@ -152,9 +152,9 @@ function deleteTask(id) {
 }
 
 function toggleTaskDone(id) {
-  const t = tasks.find(t => t.id === id); if (!t) return;
-  t.done = !t.done;
-  if (t.done) stopTimer(id);
+  const t=tasks.find(t=>t.id===id); if(!t) return;
+  t.done=!t.done;
+  if(t.done) stopTimer(id);
   save(); renderTasks(); renderCalendar();
 }
 
@@ -228,7 +228,7 @@ function renderTasks() {
     const td = task.running ? 'Remaining: '+fmtTime(remaining) : (elapsed>0?'Elapsed: '+fmtTime(elapsed):fmtTime(total)+' total');
     return `<div class="task-card${task.running?' running':''}${task.done?' done':''}" id="task_${task.id}">
       <div class="task-header">
-        <button class="done-btn${task.done?' done-active':''}" onclick="toggleTaskDone('${task.id}')" title="${task.done?'Mark incomplete':'Mark complete'}">
+        <button class="done-btn${task.done?' done-active':''}" onclick="toggleTaskDone('${task.id}')" title="${task.done?'Unmark':'Complete'}">
           ${task.done?'✓':'○'}
         </button>
         <div class="task-name${task.done?' done-name':''}">${escHtml(task.name)}</div>
@@ -294,8 +294,8 @@ function addEvent() {
 function deleteEvent(id) { events=events.filter(e=>e.id!==id); save(); renderEventList(); renderCalendar(); renderTimeline(); }
 
 function toggleEventDone(id) {
-  const ev = events.find(e => e.id === id); if (!ev) return;
-  ev.done = !ev.done; save(); renderEventList(); renderCalendar();
+  const ev=events.find(e=>e.id===id); if(!ev) return;
+  ev.done=!ev.done; save(); renderEventList(); renderCalendar();
 }
 
 function toggleEditEvent(id) {
@@ -325,7 +325,7 @@ function renderEventList() {
     if(ev.recurring&&ev.scheduleType!=='once') sl+=` · every ${ev.recurWeeks}w`;
     return `<div class="event-card" id="evcard_${ev.id}">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
-        <button class="done-btn${ev.done?' done-active':''}" onclick="toggleEventDone('${ev.id}')" title="${ev.done?'Mark incomplete':'Mark complete'}">${ev.done?'✓':'○'}</button>
+        <button class="done-btn${ev.done?' done-active':''}" onclick="toggleEventDone('${ev.id}')" title="${ev.done?'Unmark':'Complete'}">${ev.done?'✓':'○'}</button>
         <div class="ev-name${ev.done?' done-name':''}" style="margin:0;">${escHtml(ev.name)}</div>
       </div>
       <div class="ev-meta">${sl}${ev.time?' · '+ev.time:''} · ${ev.duration} min · <span class="${impClass(ev.importance)}" style="font-size:10px;padding:1px 5px;border-radius:8px;font-weight:600;">${impLabel(ev.importance)}</span></div>
@@ -376,7 +376,12 @@ function addDeadline() {
   saveDeadlines(); document.getElementById('newDlName').value=''; renderDeadlines();
 }
 
-function deleteDeadline(id) { deadlines=deadlines.filter(d=>d.id!==id); saveDeadlines(); renderDeadlines(); }
+function deleteDeadline(id) { deadlines=deadlines.filter(d=>d.id!==id); saveDeadlines(); renderDeadlines(); renderCalendar(); }
+
+function toggleDeadlineDone(id) {
+  const dl=deadlines.find(d=>d.id===id); if(!dl) return;
+  dl.done=!dl.done; saveDeadlines(); renderDeadlines(); renderCalendar();
+}
 
 function toggleEditDeadline(id) { document.getElementById('dledit_'+id)?.classList.toggle('open'); }
 
@@ -406,7 +411,7 @@ function renderDeadlines() {
     const cd=deadlineCountdown(dl.date);
     return `<div class="deadline-card" id="dlcard_${dl.id}">
       <div class="deadline-header">
-        <button class="done-btn${dl.done?' done-active':''}" onclick="toggleDeadlineDone('${dl.id}')" title="${dl.done?'Mark incomplete':'Mark complete'}">${dl.done?'✓':'○'}</button>
+        <button class="done-btn${dl.done?' done-active':''}" onclick="toggleDeadlineDone('${dl.id}')" title="${dl.done?'Unmark':'Complete'}">${dl.done?'✓':'○'}</button>
         <div class="deadline-name${dl.done?' done-name':''}">${escHtml(dl.name)}</div>
         <span class="importance-badge ${impClass(dl.importance)}">${impLabel(dl.importance)}</span>
       </div>
@@ -652,30 +657,23 @@ function playAlarmSound() {
   try {
     if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
     if(audioCtx.state==='suspended') audioCtx.resume();
-    const now=audioCtx.currentTime;
-    // Master gain for volume boost
-    const master=audioCtx.createGain();
-    master.gain.value=1.0;
-    master.connect(audioCtx.destination);
-    // Compressor to prevent clipping
+    const t=audioCtx.currentTime;
+    const master=audioCtx.createGain(); master.gain.value=1.0; master.connect(audioCtx.destination);
     const comp=audioCtx.createDynamicsCompressor();
-    comp.threshold.value=-6; comp.knee.value=3;
-    comp.ratio.value=4; comp.attack.value=0.001; comp.release.value=0.1;
-    comp.connect(master);
+    comp.threshold.value=-6; comp.ratio.value=4; comp.connect(master);
     const beep=(freq,type,start,dur,vol)=>{
       const osc=audioCtx.createOscillator(),g=audioCtx.createGain();
-      osc.connect(g);g.connect(comp);osc.frequency.value=freq;osc.type=type||'sawtooth';
-      g.gain.setValueAtTime(vol||0.8,now+start);
-      g.gain.exponentialRampToValueAtTime(0.001,now+start+dur);
-      osc.start(now+start);osc.stop(now+start+dur+0.05);
+      osc.connect(g); g.connect(comp);
+      osc.frequency.value=freq; osc.type=type||'sawtooth';
+      g.gain.setValueAtTime(vol||0.9,t+start);
+      g.gain.exponentialRampToValueAtTime(0.001,t+start+dur);
+      osc.start(t+start); osc.stop(t+start+dur+0.05);
     };
-    // Loud repeating pattern: high-low-high pairs x8
-    for(let i=0;i<8;i++){
-      beep(1047,  'sawtooth', i*0.55,      0.18, 0.9);
-      beep(1319,  'square',   i*0.55+0.2,  0.12, 0.7);
+    for(let i=0;i<10;i++){
+      beep(1047,'sawtooth',i*0.5,    0.2, 0.9);
+      beep(1319,'square',  i*0.5+0.22,0.15,0.7);
     }
-    // Repeat every 4.5s while alarm is firing
-    alarmAudio=setTimeout(playAlarmSound,4500);
+    alarmAudio=setTimeout(playAlarmSound,5200);
   } catch(e){}
 }
 
@@ -857,74 +855,44 @@ function checkAutoStart(now) {
 // ── MOBILE NAV ──
 function mobileTab(tab) {
   document.querySelectorAll('.mnav-btn').forEach(b=>b.classList.remove('active'));
-  const btn=document.getElementById('mnav-'+tab);if(btn)btn.classList.add('active');
+  const btn=document.getElementById('mnav-'+tab); if(btn) btn.classList.add('active');
   if(window.innerWidth>900) return;
   const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
-  // Hide all panels
-  [tp,ma].forEach(el=>{if(el)el.classList.add('hidden-mobile');});
-  if(cp){ cp.classList.remove('shown-mobile'); cp.style.display='none'; }
+  // Hide all
+  [tp,ma].forEach(el=>{if(el){el.classList.add('hidden-mobile');el.style.display='none';}});
+  if(cp){cp.style.display='none';}
   if(tab==='tasks'){
-    tp.classList.remove('hidden-mobile');
+    tp.classList.remove('hidden-mobile'); tp.style.display='';
     document.getElementById('mainTasks').style.display='';
     document.getElementById('mainTimeline').style.display='none';
   } else if(tab==='timeline'){
-    ma.classList.remove('hidden-mobile');
+    ma.classList.remove('hidden-mobile'); ma.style.display='';
     document.getElementById('mainTasks').style.display='none';
-    document.getElementById('mainTimeline').style.display='';
-    renderTimeline();
+    document.getElementById('mainTimeline').style.display=''; renderTimeline();
   } else if(tab==='calendar'){
-    if(cp){ cp.style.display='block'; cp.classList.add('shown-mobile'); }
+    if(cp) cp.style.display='block';
   }
 }
 
 function handleResize() {
   const isMobile=window.innerWidth<=900;
   const mobileNav=document.getElementById('mobileNav');
+  // Always hide terminal on mobile
+  const termP=document.getElementById('termPanel'), termT=document.getElementById('termToggle');
   if(isMobile){
+    if(termP) termP.style.display='none';
+    if(termT) termT.style.display='none';
     mobileNav.style.display='block';
-    // Hide terminal on mobile always
-    const tp2=document.getElementById('termPanel'),tb=document.getElementById('termToggle');
-    if(tp2) tp2.style.display='none';
-    if(tb)  tb.style.display='none';
     mobileTab('tasks');
   } else {
+    if(termT) termT.style.display='flex';
     mobileNav.style.display='none';
     const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
     [tp,ma].forEach(el=>{if(el){el.classList.remove('hidden-mobile');el.style.display='';}});
-    if(cp){ cp.classList.remove('shown-mobile'); cp.style.display=''; cp.classList.remove('hidden-mobile'); }
+    if(cp){cp.style.display='';cp.classList.remove('hidden-mobile');}
   }
 }
 window.addEventListener('resize',handleResize);
-
-// ── EXPOSE TO WINDOW ──
-Object.assign(window,{
-  toggleTaskDone, toggleEventDone, toggleDeadlineDone,
-  addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
-  addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
-  addDeadline,deleteDeadline,toggleEditDeadline,saveEditDeadline,
-  selectDay,calPrev,calNext,switchMain,mobileTab,
-  openClockMode,closeClockMode,switchCmTab,fetchWeather,
-  addAlarm,deleteAlarm,toggleAlarm,dismissAlarm,snoozeAlarm
-});
-
-// ── INIT ──
-async function init() {
-  const today=new Date();
-  document.getElementById('todayLabel').textContent=DAYS[today.getDay()]+', '+MONTHS[today.getMonth()]+' '+today.getDate()+', '+today.getFullYear();
-  const pad=n=>String(n).padStart(2,'0');
-  document.getElementById('newTaskTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
-  document.getElementById('evTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
-  document.getElementById('evDate').value=toDateStr(today);
-  selectedDay=today;
-  const cb=document.getElementById('clockModeBtnWire');
-  if(cb) cb.addEventListener('click',openClockMode);
-  await syncLoad();
-  renderTasks();renderEventList();renderCalendar();renderDeadlines();
-  tickClock();setInterval(tickClock,1000);handleResize();
-}
-
-init();
-})();
 
 // ═══════════════════════════════════════════════════
 // ── TERMINAL ──
@@ -1444,8 +1412,35 @@ window.addEventListener('load', () => {
   initTermDrag();
 });
 
-window.toggleTerminal = toggleTerminal;
-window.toggleTaskDone = toggleTaskDone;
-window.toggleEventDone = toggleEventDone;
-window.toggleDeadlineDone = toggleDeadlineDone;
-window.termRun = termRun;
+// ── INIT TERMINAL ──
+
+// ── EXPOSE TO WINDOW ──
+Object.assign(window,{
+  toggleTaskDone, toggleEventDone, toggleDeadlineDone,
+  addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
+  addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
+  addDeadline,deleteDeadline,toggleEditDeadline,saveEditDeadline,
+  selectDay,calPrev,calNext,switchMain,mobileTab,
+  openClockMode,closeClockMode,switchCmTab,fetchWeather,
+  addAlarm,deleteAlarm,toggleAlarm,dismissAlarm,snoozeAlarm,
+  toggleTerminal,termRun
+});
+
+// ── INIT ──
+async function init() {
+  const today=new Date();
+  document.getElementById('todayLabel').textContent=DAYS[today.getDay()]+', '+MONTHS[today.getMonth()]+' '+today.getDate()+', '+today.getFullYear();
+  const pad=n=>String(n).padStart(2,'0');
+  document.getElementById('newTaskTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
+  document.getElementById('evTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
+  document.getElementById('evDate').value=toDateStr(today);
+  selectedDay=today;
+  const cb=document.getElementById('clockModeBtnWire');
+  if(cb) cb.addEventListener('click',openClockMode);
+  await syncLoad();
+  renderTasks();renderEventList();renderCalendar();renderDeadlines();
+  tickClock();setInterval(tickClock,1000);handleResize();
+}
+
+init();
+})();
