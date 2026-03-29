@@ -1130,6 +1130,93 @@
     transition: background 0.15s;
   }
   .clock-mode-btn:hover { background: rgba(255,255,255,0.25); }
+
+  /* ── Clock mode tabs ── */
+  .cm-tabs {
+    display: flex;
+    gap: 6px;
+    width: 100%;
+    max-width: 600px;
+    margin-bottom: 14px;
+  }
+  .cm-tab {
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    padding: 7px 20px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: rgba(255,255,255,0.5);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .cm-tab:hover { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.8); }
+  .cm-tab.active {
+    background: rgba(45,106,79,0.4);
+    border-color: rgba(64,145,108,0.5);
+    color: #52e89e;
+  }
+
+  /* ── DEADLINES ── */
+  .deadline-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .deadline-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 11px 13px;
+    position: relative;
+  }
+  .deadline-card:hover { box-shadow: var(--shadow); }
+  .deadline-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .deadline-name { font-size: 13px; font-weight: 500; flex: 1; word-break: break-word; }
+  .deadline-meta { font-size: 11px; color: var(--text2); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 7px; }
+  .deadline-countdown {
+    font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 10px;
+    white-space: nowrap;
+  }
+  .dl-overdue { background: #FCEBEB; color: #A32D2D; }
+  .dl-today { background: #FFF3CD; color: #856404; }
+  .dl-soon { background: #FAEEDA; color: #854F0B; }
+  .dl-upcoming { background: #EAF3DE; color: #3B6D11; }
+  .deadline-actions { display: flex; gap: 5px; }
+  .deadline-edit-form {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px; margin-top: 8px; display: none;
+  }
+  .deadline-edit-form.open { display: block; }
+  .deadline-edit-form input, .deadline-edit-form select {
+    width: 100%; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 9px; font-family: 'DM Sans', sans-serif; font-size: 12px;
+    background: var(--surface); color: var(--text); outline: none; margin-bottom: 6px; display: block;
+  }
+  .deadline-edit-form input:focus, .deadline-edit-form select:focus { border-color: var(--accent2); }
+
+  /* ── Clock mode deadlines section ── */
+  .cm-deadline-item {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .cm-deadline-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .dl-dot-overdue { background: #E74C3C; }
+  .dl-dot-today { background: #F1C40F; }
+  .dl-dot-soon { background: #E67E22; }
+  .dl-dot-upcoming { background: #52e89e; }
+  .cm-deadline-name { font-size: 15px; font-weight: 500; color: #fff; margin-bottom: 2px; }
+  .cm-deadline-sub { font-size: 11px; color: rgba(255,255,255,0.45); }
+  .cm-deadline-countdown {
+    font-size: 13px; font-weight: 600; white-space: nowrap; border-radius: 8px; padding: 3px 9px;
+  }
+  .cm-dl-overdue { color: #E74C3C; }
+  .cm-dl-today { color: #F1C40F; }
+  .cm-dl-soon { color: #E67E22; }
+  .cm-dl-upcoming { color: #52e89e; }
 </style>
 </head>
 <body>
@@ -1144,9 +1231,7 @@
     <div class="clock-sep"></div>
     <span id="syncStatus" style="font-size:11px;color:rgba(255,255,255,0.6);padding:0 4px;">☁ Connecting…</span>
     <div class="clock-sep"></div>
-    <button class="wakelock-btn" id="wakeLockBtn" id="wakeLockBtnWire"><div class="wakelock-dot" id="wlDot"></div><span id="wlLabel">Keep awake</span></button>
-    <div class="clock-sep"></div>
-    <button class="orient-btn" id="orientBtn" id="orientBtnWire">⟳ Lock landscape</button>
+    <div class="wakelock-btn active" id="wakeLockBtn"><div class="wakelock-dot" id="wlDot"></div><span id="wlLabel">Awake</span></div>
     <div class="clock-sep"></div>
     <button class="clock-mode-btn" id="clockModeBtnWire">🕐 Clock</button>
   </div>
@@ -1207,6 +1292,30 @@
     <div class="section-title">Today's Tasks</div>
     <div class="task-list" id="taskList">
       <div class="empty-state">No tasks yet. Add one above!</div>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="section-title">Deadlines</div>
+    <div class="add-task-form" style="margin-bottom:10px;">
+      <input type="text" id="newDlName" placeholder="Deadline name..." />
+      <div class="form-row">
+        <label>Criticality</label>
+        <select id="newDlImp">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+          <option value="critical">Critical</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Due date</label>
+        <input type="date" id="newDlDate" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:'DM Sans',sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;" />
+      </div>
+      <button class="btn" onclick="addDeadline()">+ Add Deadline</button>
+    </div>
+    <div class="deadline-list" id="deadlineList">
+      <div class="empty-state">No deadlines yet.</div>
     </div>
   </div>
 
@@ -1321,20 +1430,22 @@
       <div class="cm-weather" id="cmWeatherTomorrow"><div class="cm-weather-loading">Loading tomorrow…</div></div>
     </div>
     <div class="cm-divider"></div>
-    <div class="cm-section-label" id="cmActiveLabel">Active task</div>
-    <div class="cm-items" id="cmActiveItems"></div>
-    <div class="cm-section-label">Upcoming — next 60 min</div>
-    <div class="cm-items" id="cmUpcomingItems"></div>
-    <div class="cm-divider"></div>
-    <div class="cm-section-label">Alarms</div>
-    <div class="cm-alarm-section">
-      <div class="cm-alarm-add">
-        <input type="time" class="cm-alarm-time-input" id="newAlarmTime" />
-        <input type="text" class="cm-alarm-label-input" id="newAlarmLabel" placeholder="Label (optional)" />
-        <button class="cm-alarm-add-btn" onclick="addAlarm()">+ Add alarm</button>
-      </div>
-      <div class="cm-alarm-list" id="alarmList"></div>
+
+    <!-- Tasks tab strip -->
+    <div class="cm-tabs" id="cmTabs">
+      <button class="cm-tab active" id="cmTabActive" onclick="switchCmTab('active')">Active</button>
+      <button class="cm-tab" id="cmTabUpcoming" onclick="switchCmTab('upcoming')">Upcoming</button>
     </div>
+    <div class="cm-items" id="cmActiveItems"></div>
+    <div class="cm-items" id="cmUpcomingItems" style="display:none;"></div>
+
+    <div class="cm-divider"></div>
+
+    <!-- Deadlines: always show today + tomorrow -->
+    <div class="cm-section-label">Deadlines — Today</div>
+    <div class="cm-items" id="cmDeadlineItemsToday"></div>
+    <div class="cm-section-label" style="margin-top:14px;">Deadlines — Tomorrow</div>
+    <div class="cm-items" id="cmDeadlineItemsTomorrow"></div>
   </div>
 
 
@@ -1351,16 +1462,18 @@
 
 </div>
 
-<script type="module">
-// ── FIREBASE IMPORTS (must be first in module) ──
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, doc, setDoc, onSnapshot, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+<script>
+(function() {
 
 // ── APP STATE ──
 let tasks = [];
 let events = [];
 let db = null;
 let syncEnabled = false;
+let audioCtx = null;
 
 const firebaseConfig = {
   apiKey: "AIzaSyBK9sjOnHmeoRqHz6sz31wYSClKYjKZYyQ",
@@ -1372,8 +1485,8 @@ const firebaseConfig = {
 };
 
 try {
-  const fbApp = initializeApp(firebaseConfig);
-  db = getFirestore(fbApp);
+  const fbApp = firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
 } catch(e) {
   console.warn('Firebase init failed:', e);
 }
@@ -1389,10 +1502,10 @@ async function syncLoad() {
 
   // Then try Firebase with a 5s timeout so slow connections don't block
   try {
-    const ref = doc(db, 'planner', 'data');
+    const ref = db.collection('planner').doc('data');
     const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000));
-    const snap = await Promise.race([getDoc(ref), timeoutPromise]);
-    if (snap.exists()) {
+    const snap = await Promise.race([ref.get(), timeoutPromise]);
+    if (snap.exists) {
       const d = snap.data();
       // Use Firebase data if it's newer or localStorage was empty
       if (!lt || (d.updated && d.updated > (JSON.parse(lt).updated || 0))) {
@@ -1402,15 +1515,15 @@ async function syncLoad() {
     } else {
       // First time using Firebase — push localStorage data up
       if (tasks.length || events.length) {
-        await setDoc(ref, { tasks, events, updated: Date.now() });
+        await ref.set({ tasks, events, updated: Date.now() });
       }
     }
     syncEnabled = true;
     showSyncStatus('synced');
 
     // Live listener for cross-device sync
-    onSnapshot(ref, (snap) => {
-      if (!snap.exists()) return;
+    ref.onSnapshot((snap) => {
+      if (!snap.exists) return;
       const d = snap.data();
       const incoming = JSON.stringify({ tasks: d.tasks, events: d.events });
       const current  = JSON.stringify({ tasks, events });
@@ -1424,6 +1537,7 @@ async function syncLoad() {
         renderEventList();
         renderCalendar();
         renderTimeline();
+        renderDeadlines();
       }
     });
   } catch(e) {
@@ -1440,7 +1554,7 @@ async function syncSave() {
   localStorage.setItem('dp_events', JSON.stringify(events));
   if (!syncEnabled || !db) return;
   try {
-    await setDoc(doc(db, 'planner', 'data'), { tasks, events, updated: Date.now() });
+    await db.collection('planner').doc('data').set({ tasks, events, updated: Date.now() });
     showSyncStatus('synced');
   } catch(e) {
     showSyncStatus('error');
@@ -1533,6 +1647,7 @@ function startTimer(id) {
       t.running = false;
       clearInterval(timers[id]);
       delete timers[id];
+      playTaskEndSound();
     }
     save();
     updateTaskCard(id);
@@ -2028,8 +2143,6 @@ async function fetchWeather() {
     renderWeather(weatherCache);
     return;
   }
-  const el = document.getElementById('cmWeather');
-  if (!el) return;
 
   try {
     // Get user location
@@ -2064,7 +2177,7 @@ async function fetchWeather() {
     weatherLastFetch = Date.now();
     renderWeather(weatherCache);
   } catch(e) {
-    const el = document.getElementById('cmWeather');
+    const el = document.getElementById('cmWeatherToday');
     if (el) el.innerHTML = '<div class="cm-weather-loading">Weather unavailable — enable location</div>';
   }
 }
@@ -2102,7 +2215,247 @@ function renderWeather(cache) {
   }
 }
 
-// ===== ALARMS =====
+// ===== SOUND EFFECTS =====
+function playTaskEndSound() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const now = audioCtx.currentTime;
+    // Three ascending chime notes — task done!
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+    notes.forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, now + i * 0.18);
+      gain.gain.linearRampToValueAtTime(0.35, now + i * 0.18 + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.18 + 0.5);
+      osc.start(now + i * 0.18);
+      osc.stop(now + i * 0.18 + 0.55);
+    });
+  } catch(e) {}
+}
+
+function playDeadlineWarningSound(criticality) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const now = audioCtx.currentTime;
+    // Different urgency tones per criticality
+    const configs = {
+      critical: { freqs: [880, 880, 1100], interval: 0.22, gain: 0.5 },  // fast urgent
+      high:     { freqs: [660, 880], interval: 0.3, gain: 0.4 },
+      medium:   { freqs: [523, 659], interval: 0.4, gain: 0.3 },
+      low:      { freqs: [440, 523], interval: 0.5, gain: 0.25 }
+    };
+    const cfg = configs[criticality] || configs.medium;
+    cfg.freqs.forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.type = criticality === 'critical' ? 'square' : 'sine';
+      osc.frequency.value = freq;
+      const start = now + i * cfg.interval;
+      gain.gain.setValueAtTime(cfg.gain, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.35);
+      osc.start(start); osc.stop(start + 0.4);
+    });
+  } catch(e) {}
+}
+
+// ===== DEADLINES =====
+let deadlines = JSON.parse(localStorage.getItem('dp_deadlines') || '[]');
+// Track which deadline warnings have already fired this session (keyed by id+dayStr)
+let deadlineWarnedKeys = new Set(JSON.parse(sessionStorage.getItem('dp_dlwarned') || '[]'));
+
+function saveDeadlines() {
+  localStorage.setItem('dp_deadlines', JSON.stringify(deadlines));
+}
+
+function addDeadline() {
+  const name = document.getElementById('newDlName').value.trim();
+  const date = document.getElementById('newDlDate').value;
+  if (!name || !date) return;
+  deadlines.push({
+    id: uid(),
+    name,
+    importance: document.getElementById('newDlImp').value,
+    date
+  });
+  saveDeadlines();
+  document.getElementById('newDlName').value = '';
+  renderDeadlines();
+}
+
+function deleteDeadline(id) {
+  deadlines = deadlines.filter(d => d.id !== id);
+  saveDeadlines();
+  renderDeadlines();
+}
+
+function toggleEditDeadline(id) {
+  const form = document.getElementById('dledit_' + id);
+  if (form) form.classList.toggle('open');
+}
+
+function saveEditDeadline(id) {
+  const dl = deadlines.find(d => d.id === id);
+  if (!dl) return;
+  const nameEl = document.getElementById('dlEditName_' + id);
+  const impEl  = document.getElementById('dlEditImp_' + id);
+  const dateEl = document.getElementById('dlEditDate_' + id);
+  if (nameEl && nameEl.value.trim()) dl.name = nameEl.value.trim();
+  if (impEl)  dl.importance = impEl.value;
+  if (dateEl && dateEl.value) dl.date = dateEl.value;
+  saveDeadlines();
+  renderDeadlines();
+}
+
+function deadlineCountdown(dateStr) {
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const due = new Date(dateStr + 'T00:00:00');
+  const diff = Math.round((due - today) / 86400000);
+  if (diff < 0)  return { label: `${Math.abs(diff)}d overdue`, cls: 'dl-overdue', dotCls: 'dl-dot-overdue', cmCls: 'cm-dl-overdue' };
+  if (diff === 0) return { label: 'Due today!', cls: 'dl-today', dotCls: 'dl-dot-today', cmCls: 'cm-dl-today' };
+  if (diff <= 3)  return { label: `Due in ${diff}d`, cls: 'dl-soon', dotCls: 'dl-dot-soon', cmCls: 'cm-dl-soon' };
+  return { label: `Due in ${diff}d`, cls: 'dl-upcoming', dotCls: 'dl-dot-upcoming', cmCls: 'cm-dl-upcoming' };
+}
+
+function renderDeadlines() {
+  const list = document.getElementById('deadlineList');
+  if (!list) return;
+  if (!deadlines.length) {
+    list.innerHTML = '<div class="empty-state">No deadlines yet.</div>';
+    return;
+  }
+  const sorted = [...deadlines].sort((a, b) => a.date.localeCompare(b.date));
+  list.innerHTML = sorted.map(dl => {
+    const cd = deadlineCountdown(dl.date);
+    return `<div class="deadline-card" id="dlcard_${dl.id}">
+      <div class="deadline-header">
+        <div class="deadline-name">${escHtml(dl.name)}</div>
+        <span class="importance-badge ${impClass(dl.importance)}">${impLabel(dl.importance)}</span>
+      </div>
+      <div class="deadline-meta">
+        <span>📅 ${dl.date}</span>
+        <span class="deadline-countdown ${cd.cls}">${cd.label}</span>
+      </div>
+      <div class="deadline-actions">
+        <button class="icon-btn" onclick="toggleEditDeadline('${dl.id}')">✏ Edit</button>
+        <button class="icon-btn del-btn" onclick="deleteDeadline('${dl.id}')">✕</button>
+      </div>
+      <div class="deadline-edit-form" id="dledit_${dl.id}">
+        <input type="text" id="dlEditName_${dl.id}" value="${escHtml(dl.name)}" placeholder="Deadline name" />
+        <select id="dlEditImp_${dl.id}">
+          <option value="low"${dl.importance==='low'?' selected':''}>Low</option>
+          <option value="medium"${dl.importance==='medium'?' selected':''}>Medium</option>
+          <option value="high"${dl.importance==='high'?' selected':''}>High</option>
+          <option value="critical"${dl.importance==='critical'?' selected':''}>Critical</option>
+        </select>
+        <input type="date" id="dlEditDate_${dl.id}" value="${dl.date}" />
+        <div style="display:flex;gap:6px;">
+          <button class="btn" style="font-size:12px;padding:5px 10px;" onclick="saveEditDeadline('${dl.id}')">Save</button>
+          <button class="btn secondary" style="font-size:12px;padding:5px 10px;" onclick="toggleEditDeadline('${dl.id}')">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function checkDeadlineWarnings(now) {
+  const pad = n => String(n).padStart(2,'0');
+  const curTime = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const today = new Date(); today.setHours(0,0,0,0);
+
+  deadlines.forEach(dl => {
+    const due = new Date(dl.date + 'T00:00:00');
+    const daysUntil = Math.round((due - today) / 86400000);
+
+    // Warning times in minutes before midnight of due date
+    // We interpret as: on due day, warn at the specified minute mark
+    // Actually: warn at specific times of day ON the warning day
+    // critical = warn 15min before midnight? No — these are day-based warnings.
+    // Let's interpret as: warn at 9:00 AM on the warning day
+    // critical: day of deadline, at 9:00 AM → "15 min warning" doesn't apply to days.
+    // Reinterpret: warn at a specific time of day when N days remain
+    // We'll do: warn at 09:00 on the day that matches the threshold
+    const warnThresholds = {
+      critical: 0, // day of deadline
+      high: 1,     // 1 day before
+      medium: 0,   // day of deadline (same day)
+      low: 0       // day of deadline
+    };
+    // Sound urgency: critical warns 15 min window, high 10 min, med/low 5 min
+    // We'll trigger on the matching day at 09:00 (one-time per day)
+    const threshold = warnThresholds[dl.importance] ?? 0;
+    if (daysUntil !== threshold) return;
+
+    const warnKey = `${dl.id}_${dl.date}`;
+    if (deadlineWarnedKeys.has(warnKey)) return;
+
+    // Only fire at 09:00 (or if between 09:00-09:05 and haven't fired)
+    if (now.getHours() === 9 && now.getMinutes() < 5) {
+      deadlineWarnedKeys.add(warnKey);
+      sessionStorage.setItem('dp_dlwarned', JSON.stringify([...deadlineWarnedKeys]));
+      playDeadlineWarningSound(dl.importance);
+    }
+  });
+}
+
+function switchCmTab(tab) {
+  document.getElementById('cmActiveItems').style.display = tab === 'active' ? '' : 'none';
+  document.getElementById('cmUpcomingItems').style.display = tab === 'upcoming' ? '' : 'none';
+  document.getElementById('cmTabActive').classList.toggle('active', tab === 'active');
+  document.getElementById('cmTabUpcoming').classList.toggle('active', tab === 'upcoming');
+}
+
+function updateClockModeDeadlines(now) {
+  const todayEl   = document.getElementById('cmDeadlineItemsToday');
+  const tmrwEl    = document.getElementById('cmDeadlineItemsTomorrow');
+  if (!todayEl || !tmrwEl) return;
+
+  function dateStr(d) {
+    return d.getFullYear() + '-' +
+      String(d.getMonth()+1).padStart(2,'0') + '-' +
+      String(d.getDate()).padStart(2,'0');
+  }
+  function renderList(el, dls, emptyMsg) {
+    if (!dls.length) { el.innerHTML = `<div class="cm-empty">${emptyMsg}</div>`; return; }
+    el.innerHTML = dls.map(dl => {
+      const cd = deadlineCountdown(dl.date);
+      return `<div class="cm-deadline-item">
+        <div class="cm-deadline-dot ${cd.dotCls}"></div>
+        <div style="flex:1;">
+          <div class="cm-deadline-name">${escHtml(dl.name)}</div>
+          <div class="cm-deadline-sub">${impLabel(dl.importance)}</div>
+        </div>
+        <div class="cm-deadline-countdown ${cd.cmCls}">${cd.label}</div>
+      </div>`;
+    }).join('');
+  }
+
+  const isPastThreePM = now.getHours() >= 15;
+  const primary = new Date(now); primary.setHours(0,0,0,0);
+  if (isPastThreePM) primary.setDate(primary.getDate() + 1);
+  const secondary = new Date(primary); secondary.setDate(primary.getDate() + 1);
+
+  const primaryStr   = dateStr(primary);
+  const secondaryStr = dateStr(secondary);
+
+  // Update labels
+  const todayLabel = document.querySelector('#cmDeadlineItemsToday').previousElementSibling;
+  const tmrwLabel  = document.querySelector('#cmDeadlineItemsTomorrow').previousElementSibling;
+  if (todayLabel) todayLabel.textContent = isPastThreePM ? 'Deadlines — Tomorrow' : 'Deadlines — Today';
+  if (tmrwLabel)  tmrwLabel.textContent  = isPastThreePM ? 'Deadlines — Day After' : 'Deadlines — Tomorrow';
+
+  renderList(todayEl, deadlines.filter(dl => dl.date === primaryStr),   isPastThreePM ? 'None tomorrow.' : 'None today.');
+  renderList(tmrwEl,  deadlines.filter(dl => dl.date === secondaryStr), isPastThreePM ? 'None the day after.' : 'None tomorrow.');
+}
+
+
 let alarms = JSON.parse(localStorage.getItem('dp_alarms') || '[]');
 let firingAlarm = null;
 let alarmAudio = null;
@@ -2242,10 +2595,8 @@ function updateClockMode() {
   // Active tasks (running timers)
   const activeTasks = tasks.filter(t => t.running);
   const activeEl = document.getElementById('cmActiveItems');
-  const activeLbl = document.getElementById('cmActiveLabel');
 
   if (activeTasks.length) {
-    activeLbl.textContent = 'Active task';
     activeEl.innerHTML = activeTasks.map(t => {
       const total = t.duration * 60;
       const elapsed = t.elapsed || 0;
@@ -2264,7 +2615,6 @@ function updateClockMode() {
       </div>`;
     }).join('');
   } else {
-    activeLbl.textContent = 'No active tasks';
     activeEl.innerHTML = '<div class="cm-empty">Nothing running right now.</div>';
   }
 
@@ -2302,45 +2652,13 @@ function updateClockMode() {
   } else {
     upcomingEl.innerHTML = '<div class="cm-empty">Nothing in the next hour.</div>';
   }
+
+  // Deadlines panel
+  updateClockModeDeadlines(now);
 }
 
-// ===== ORIENTATION =====
-let orientationLocked = false;
-
-async function toggleOrientation() {
-  const btn = document.getElementById('orientBtn');
-  if (!screen.orientation || !screen.orientation.lock) {
-    alert('Orientation lock not supported on this device/browser.');
-    return;
-  }
-  if (!orientationLocked) {
-    try {
-      await screen.orientation.lock('landscape');
-      orientationLocked = true;
-      btn.textContent = '↕ Unlock rotation';
-      btn.classList.add('active');
-    } catch(e) { alert('Could not lock orientation: ' + e.message); }
-  } else {
-    screen.orientation.unlock();
-    orientationLocked = false;
-    btn.textContent = '⟳ Lock landscape';
-    btn.classList.remove('active');
-  }
-}
-
-window.addEventListener('load', () => {
-  if (screen.orientation && screen.orientation.lock) {
-    screen.orientation.lock('landscape').then(() => {
-      orientationLocked = true;
-      const btn = document.getElementById('orientBtn');
-      if (btn) { btn.textContent = '↕ Unlock rotation'; btn.classList.add('active'); }
-    }).catch(() => {});
-  }
-});
-
-// ===== WAKE LOCK + ANTI-SLEEP (hardened) =====
+// ===== WAKE LOCK + ANTI-SLEEP (always on, hardened) =====
 let wakeLock = null;
-let audioCtx = null;
 let silentPingInterval = null;
 let wakeLockHeartbeat = null;
 let wakeLockEnabled = false;
@@ -2367,61 +2685,60 @@ async function requestWakeLock() {
     wakeLock = await navigator.wakeLock.request('screen');
     wakeLock.addEventListener('release', () => {
       wakeLock = null;
-      // re-acquire after a short delay if still enabled and page visible
       if (wakeLockEnabled && document.visibilityState === 'visible') {
         setTimeout(requestWakeLock, 500);
       }
     });
-  } catch(e) {}
-}
-
-function releaseWakeLock() {
-  if (wakeLock) { try { wakeLock.release(); } catch(e) {} wakeLock = null; }
-}
-
-async function toggleWakeLock() {
-  wakeLockEnabled = !wakeLockEnabled;
-  const btn = document.getElementById('wakeLockBtn');
-  const lbl = document.getElementById('wlLabel');
-  if (wakeLockEnabled) {
-    btn.classList.add('active');
-    lbl.textContent = 'Awake';
-    // init audio context on user gesture
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    await requestWakeLock();
-    // silent audio ping every 20s to keep tab alive
-    silentPingInterval = setInterval(playSilentPing, 20000);
-    // heartbeat: re-check wake lock every 15s in case Android killed it silently
-    wakeLockHeartbeat = setInterval(async () => {
-      if (wakeLockEnabled && document.visibilityState === 'visible' && !wakeLock) {
-        await requestWakeLock();
-      }
-    }, 15000);
-  } else {
-    btn.classList.remove('active');
-    lbl.textContent = 'Keep awake';
-    releaseWakeLock();
-    clearInterval(silentPingInterval);
-    clearInterval(wakeLockHeartbeat);
+    updateWakeLockIndicator(true);
+  } catch(e) {
+    updateWakeLockIndicator(false);
   }
 }
 
-// re-acquire on tab focus / visibility restore
+function updateWakeLockIndicator(active) {
+  const btn = document.getElementById('wakeLockBtn');
+  const lbl = document.getElementById('wlLabel');
+  if (!btn || !lbl) return;
+  btn.classList.toggle('active', active);
+  lbl.textContent = active ? 'Awake' : 'Screen lock';
+}
+
+async function enableWakeLock() {
+  wakeLockEnabled = true;
+  await requestWakeLock();
+  if (silentPingInterval) clearInterval(silentPingInterval);
+  silentPingInterval = setInterval(playSilentPing, 20000);
+  if (wakeLockHeartbeat) clearInterval(wakeLockHeartbeat);
+  // Tighter heartbeat (10s) — catches silent OS kills faster
+  wakeLockHeartbeat = setInterval(async () => {
+    if (document.visibilityState === 'visible' && !wakeLock) {
+      await requestWakeLock();
+    }
+  }, 10000);
+}
+
+// Re-acquire on every restore path
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && wakeLockEnabled) {
     await requestWakeLock();
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   }
 });
-
 window.addEventListener('focus', async () => {
   if (wakeLockEnabled && !wakeLock) await requestWakeLock();
 });
-
 window.addEventListener('pageshow', async () => {
   if (wakeLockEnabled) await requestWakeLock();
 });
+// Unlock AudioContext on first click (browser autoplay policy)
+document.addEventListener('click', function _firstClick() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume().then(() => enableWakeLock());
+  else enableWakeLock();
+  document.removeEventListener('click', _firstClick);
+}, { once: true });
+
+
 
 // ===== CLOCK =====
 function tickClock() {
@@ -2438,6 +2755,7 @@ function tickClock() {
     DAYS[now.getDay()] + ', ' + MONTHS[now.getMonth()] + ' ' + now.getDate() + ', ' + now.getFullYear();
   checkAutoStart(now);
   checkAlarms(now);
+  checkDeadlineWarnings(now);
 }
 
 function checkAutoStart(now) {
@@ -2504,6 +2822,10 @@ window.addEventListener('resize', handleResize);
 
 
 // ── Expose functions to global scope (required for inline onclick in type=module) ──
+window.addDeadline = addDeadline;
+window.deleteDeadline = deleteDeadline;
+window.toggleEditDeadline = toggleEditDeadline;
+window.saveEditDeadline = saveEditDeadline;
 window.addTask = addTask;
 window.deleteTask = deleteTask;
 window.startTimer = startTimer;
@@ -2522,10 +2844,9 @@ window.calPrev = calPrev;
 window.calNext = calNext;
 window.switchMain = switchMain;
 window.mobileTab = mobileTab;
-window.toggleWakeLock = toggleWakeLock;
-window.toggleOrientation = toggleOrientation;
 window.openClockMode = openClockMode;
 window.closeClockMode = closeClockMode;
+window.switchCmTab = switchCmTab;
 window.fetchWeather = fetchWeather;
 window.addAlarm = addAlarm;
 window.deleteAlarm = deleteAlarm;
@@ -2547,13 +2868,9 @@ async function init() {
   selectedDay = today;
 
 
-  // Wire clockbar buttons
-  const ob = document.getElementById('orientBtnWire');
-  if (ob) ob.addEventListener('click', toggleOrientation);
+  // Wire clockbar clock button
   const cb = document.getElementById('clockModeBtnWire');
   if (cb) cb.addEventListener('click', openClockMode);
-  const wb = document.getElementById('wakeLockBtnWire');
-  if (wb) wb.addEventListener('click', toggleWakeLock);
 
   // load from Firebase (falls back to localStorage if offline)
   await syncLoad();
@@ -2561,6 +2878,7 @@ async function init() {
   renderTasks();
   renderEventList();
   renderCalendar();
+  renderDeadlines();
 
   tickClock();
   setInterval(tickClock, 1000);
@@ -2568,6 +2886,7 @@ async function init() {
 }
 
 init();
+})();
 </script>
 
 <script>
