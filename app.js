@@ -837,35 +837,6 @@ function handleResize() {
 }
 window.addEventListener('resize',handleResize);
 
-// ── EXPOSE TO WINDOW ──
-Object.assign(window,{
-  addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
-  addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
-  addDeadline,deleteDeadline,toggleEditDeadline,saveEditDeadline,
-  selectDay,calPrev,calNext,switchMain,mobileTab,
-  openClockMode,closeClockMode,switchCmTab,fetchWeather,
-  addAlarm,deleteAlarm,toggleAlarm,dismissAlarm,snoozeAlarm
-});
-
-// ── INIT ──
-async function init() {
-  const today=new Date();
-  document.getElementById('todayLabel').textContent=DAYS[today.getDay()]+', '+MONTHS[today.getMonth()]+' '+today.getDate()+', '+today.getFullYear();
-  const pad=n=>String(n).padStart(2,'0');
-  document.getElementById('newTaskTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
-  document.getElementById('evTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
-  document.getElementById('evDate').value=toDateStr(today);
-  selectedDay=today;
-  const cb=document.getElementById('clockModeBtnWire');
-  if(cb) cb.addEventListener('click',openClockMode);
-  await syncLoad();
-  renderTasks();renderEventList();renderCalendar();renderDeadlines();
-  tickClock();setInterval(tickClock,1000);handleResize();
-}
-
-init();
-})();
-
 // ═══════════════════════════════════════════════════
 // ── TERMINAL ──
 // ═══════════════════════════════════════════════════
@@ -882,9 +853,9 @@ function toggleTerminal() {
 }
 
 function termWelcome() {
-  termPrint('head', '  Daily Planner Terminal  ');
-  termPrint('dim',  '  type help for commands  ');
-  termPrint('dim',  '──────────────────────────');
+  termPrintHtml('head', '<span style="color:#3dd68c;">planner</span> <span style="color:#2a6e40;">v1.0</span>');
+  termPrint('dim',  'Type <span style="color:#5a9e6f;">help</span> for available commands.');
+  termPrintHtml('dim', '─────────────────────────────────────');
 }
 
 function termPrint(cls, text) {
@@ -896,10 +867,19 @@ function termPrint(cls, text) {
   out.scrollTop = out.scrollHeight;
 }
 
-function termEcho(cmd, result) {
-  termPrint('prompt', 'planner> ' + cmd);
-  if (Array.isArray(result)) result.forEach(([c,t]) => termPrint(c,t));
-  else if (result) termPrint('out', result);
+function termPrintHtml(cls, html) {
+  const out = document.getElementById('termOutput');
+  const el = document.createElement('div');
+  el.className = 't-line t-' + cls;
+  el.innerHTML = html;
+  out.appendChild(el);
+  out.scrollTop = out.scrollHeight;
+}
+
+function termEcho(cmd) {
+  termPrintHtml('prompt',
+    `<span class="term-u">user</span><span class="term-at">@</span><span class="term-h">planner</span><span class="term-sep">:</span><span class="term-path">~</span><span class="term-dollar">$</span> <span style="color:#d4e8d6;">${escHtml(cmd)}</span>`
+  );
 }
 
 function termError(msg) { termPrint('err', '✕  ' + msg); }
@@ -974,6 +954,7 @@ function termRun(raw) {
   if (!raw) return;
   termHistory.unshift(raw);
   termHistIdx = -1;
+  termEcho(raw);
   const parts = parseArgs(raw);
   const cmd = parts[0]?.toLowerCase();
   const sub = parts[1]?.toLowerCase();
@@ -1384,5 +1365,34 @@ window.addEventListener('load', () => {
   initTermDrag();
 });
 
-window.toggleTerminal = toggleTerminal;
-window.termRun = termRun;
+// ── INIT TERMINAL ──
+
+// ── EXPOSE TO WINDOW ──
+Object.assign(window,{
+  addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
+  addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
+  addDeadline,deleteDeadline,toggleEditDeadline,saveEditDeadline,
+  selectDay,calPrev,calNext,switchMain,mobileTab,
+  openClockMode,closeClockMode,switchCmTab,fetchWeather,
+  addAlarm,deleteAlarm,toggleAlarm,dismissAlarm,snoozeAlarm,
+  toggleTerminal,termRun
+});
+
+// ── INIT ──
+async function init() {
+  const today=new Date();
+  document.getElementById('todayLabel').textContent=DAYS[today.getDay()]+', '+MONTHS[today.getMonth()]+' '+today.getDate()+', '+today.getFullYear();
+  const pad=n=>String(n).padStart(2,'0');
+  document.getElementById('newTaskTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
+  document.getElementById('evTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
+  document.getElementById('evDate').value=toDateStr(today);
+  selectedDay=today;
+  const cb=document.getElementById('clockModeBtnWire');
+  if(cb) cb.addEventListener('click',openClockMode);
+  await syncLoad();
+  renderTasks();renderEventList();renderCalendar();renderDeadlines();
+  tickClock();setInterval(tickClock,1000);handleResize();
+}
+
+init();
+})();
