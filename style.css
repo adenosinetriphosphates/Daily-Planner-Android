@@ -426,13 +426,13 @@ h1, h2, .serif { font-family: 'DM Serif Display', serif; }
 }
 .terminal-input::placeholder { color: #333; }
 
-/* ── DONE / COMPLETE STYLES ── */
+/* ── DONE / CHECKMARK ── */
 .done-btn {
   background: none;
   border: 1.5px solid var(--border2);
   border-radius: 50%;
   width: 22px; height: 22px;
-  font-size: 11px;
+  font-size: 11px; line-height: 1;
   color: var(--text3);
   cursor: pointer;
   flex-shrink: 0;
@@ -440,43 +440,45 @@ h1, h2, .serif { font-family: 'DM Serif Display', serif; }
   transition: all 0.15s;
   padding: 0;
 }
-.done-btn:hover { border-color: var(--accent2); color: var(--accent); }
+.done-btn:hover { border-color: var(--accent2); color: var(--accent); background: var(--accent-light); }
 .done-btn.done-active { background: var(--accent); border-color: var(--accent); color: white; }
 .done-name { text-decoration: line-through; opacity: 0.45; }
 .task-card.done { opacity: 0.6; }
 .task-card.done .timer-bar { opacity: 0.3; }
 
-/* ── MOBILE: hide sidebar white panels, true fullscreen ── */
+/* ── MOBILE FULLSCREEN FIXES ── */
 @media (max-width: 900px) {
-  /* Remove any stray white background showing through */
+  /* Ensure body/app fills the whole screen with no white gaps */
+  body { background: var(--bg); overflow-x: hidden; }
+  .app { min-height: 100dvh; background: var(--bg); }
   .app-body { background: var(--bg); }
+
+  /* Right panel hidden by default on mobile — only shown via mobileTab */
   .panel.right { display: none; }
-  .panel.right.hidden-mobile { display: none !important; }
-  /* Show calendar panel only when explicitly shown */
-  .panel.right.shown-mobile { display: block !important; }
 
-  /* Full viewport height for panels */
-  .panel, .main-area {
-    min-height: calc(100dvh - 120px);
-  }
-
-  /* Hide desktop-only elements */
+  /* Hide terminal completely on mobile */
   .terminal-toggle, .terminal-panel { display: none !important; }
 
-  /* Topbar compact */
+  /* Compact topbar */
   .topbar .date-badge { display: none; }
+  .topbar { gap: 8px; }
+
+  /* Panels fill screen */
+  .panel, .main-area {
+    min-height: calc(100dvh - 120px);
+    background: var(--surface);
+  }
+
+  /* Bottom nav safe area */
+  .mobile-nav {
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
 }
 
-/* ── MOBILE NAV: always on top, proper safe area ── */
-.mobile-nav {
-  padding-bottom: max(8px, env(safe-area-inset-bottom));
-  background: var(--surface);
-  border-top: 1.5px solid var(--border);
-}
-
-/* ── FULLSCREEN PWA: remove any white gaps ── */
+/* PWA standalone gaps fix */
 @media (display-mode: standalone) {
+  .clockbar {
+    padding-top: max(8px, env(safe-area-inset-top));
+  }
   body { background: var(--bg); }
-  .app { min-height: 100dvh; }
-  .clockbar { padding-top: max(8px, env(safe-area-inset-top)); }
 }
