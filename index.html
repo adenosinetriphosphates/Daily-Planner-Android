@@ -871,6 +871,157 @@
   .wakelock-btn.active { background: rgba(255,255,255,0.28); border-color: rgba(255,255,255,0.6); }
   .wakelock-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.4); }
   .wakelock-btn.active .wakelock-dot { background: #52e89e; animation: pulse 1.5s infinite; }
+
+  /* ── CLOCK MODE ── */
+  .clock-mode-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #0D1F17;
+    z-index: 9999;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    gap: 0;
+  }
+  .clock-mode-overlay.open { display: flex; }
+
+  .cm-time {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(72px, 18vw, 160px);
+    color: #ffffff;
+    letter-spacing: -2px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .cm-ampm {
+    font-size: clamp(20px, 4vw, 40px);
+    color: rgba(255,255,255,0.45);
+    font-weight: 300;
+    margin-left: 12px;
+    vertical-align: super;
+  }
+  .cm-date {
+    font-size: clamp(14px, 2.5vw, 22px);
+    color: rgba(255,255,255,0.45);
+    margin-top: 8px;
+    margin-bottom: 36px;
+    font-weight: 300;
+    letter-spacing: 0.05em;
+  }
+  .cm-divider {
+    width: 100%;
+    max-width: 600px;
+    height: 1px;
+    background: rgba(255,255,255,0.1);
+    margin-bottom: 28px;
+  }
+  .cm-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.3);
+    margin-bottom: 14px;
+    width: 100%;
+    max-width: 600px;
+  }
+  .cm-items {
+    width: 100%;
+    max-width: 600px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+  .cm-item {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .cm-item.active-item {
+    background: rgba(45,106,79,0.35);
+    border-color: rgba(64,145,108,0.5);
+  }
+  .cm-item-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #40916C;
+    flex-shrink: 0;
+  }
+  .cm-item-dot.ev { background: #8E44AD; }
+  .cm-item-dot.active { background: #52e89e; animation: pulse 1.5s infinite; }
+  .cm-item-info { flex: 1; }
+  .cm-item-name {
+    font-size: clamp(14px, 2vw, 17px);
+    font-weight: 500;
+    color: #ffffff;
+    margin-bottom: 2px;
+  }
+  .cm-item-meta { font-size: 12px; color: rgba(255,255,255,0.45); }
+  .cm-timer {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(16px, 3vw, 24px);
+    font-variant-numeric: tabular-nums;
+    color: #52e89e;
+  }
+  .cm-timer.warn { color: #F1C40F; }
+  .cm-timer.danger { color: #E74C3C; }
+  .cm-timer-bar {
+    width: 100%;
+    height: 3px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 2px;
+    margin-top: 6px;
+    overflow: hidden;
+  }
+  .cm-timer-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: #52e89e;
+    transition: width 1s linear, background 0.5s;
+  }
+  .cm-empty {
+    color: rgba(255,255,255,0.25);
+    font-size: 14px;
+    font-style: italic;
+  }
+  .cm-close {
+    position: fixed;
+    top: 20px;
+    right: 24px;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    color: white;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  .cm-close:hover { background: rgba(255,255,255,0.2); }
+  .clock-mode-btn {
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 20px;
+    padding: 4px 13px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    color: rgba(255,255,255,0.92);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .clock-mode-btn:hover { background: rgba(255,255,255,0.25); }
 </style>
 </head>
 <body>
@@ -888,6 +1039,8 @@
     <button class="wakelock-btn" id="wakeLockBtn" onclick="toggleWakeLock()"><div class="wakelock-dot" id="wlDot"></div><span id="wlLabel">Keep awake</span></button>
     <div class="clock-sep"></div>
     <button class="orient-btn" id="orientBtn" onclick="toggleOrientation()">⟳ Lock landscape</button>
+    <div class="clock-sep"></div>
+    <button class="clock-mode-btn" onclick="openClockMode()">🕐 Clock</button>
   </div>
 
   <div class="topbar">
@@ -1049,20 +1202,33 @@
     </div>
   </div>
 
+
+  <!-- CLOCK MODE OVERLAY -->
+  <div class="clock-mode-overlay" id="clockOverlay">
+    <button class="cm-close" onclick="closeClockMode()">✕</button>
+    <div class="cm-time" id="cmTime">12:00<span class="cm-ampm" id="cmAmpm">AM</span></div>
+    <div class="cm-date" id="cmDate"></div>
+    <div class="cm-divider"></div>
+    <div class="cm-section-label" id="cmActiveLabel">Active task</div>
+    <div class="cm-items" id="cmActiveItems"></div>
+    <div class="cm-section-label">Upcoming — next 60 min</div>
+    <div class="cm-items" id="cmUpcomingItems"></div>
+  </div>
+
   </div><!-- end app-body -->
 
 </div>
 
 <script type="module">
+// ── FIREBASE IMPORTS (must be first in module) ──
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getFirestore, doc, setDoc, onSnapshot, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+// ── APP STATE ──
 let tasks = [];
 let events = [];
 let db = null;
 let syncEnabled = false;
-const SYNC_DOC = 'planner/data';
-
-// ── FIREBASE INIT ──
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, doc, setDoc, onSnapshot, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBK9sjOnHmeoRqHz6sz31wYSClKYjKZYyQ",
@@ -1073,37 +1239,52 @@ const firebaseConfig = {
   appId: "1:776129481231:web:098c5a5dfe0befb4fc317a"
 };
 
-const fbApp = initializeApp(firebaseConfig);
-db = getFirestore(fbApp);
+try {
+  const fbApp = initializeApp(firebaseConfig);
+  db = getFirestore(fbApp);
+} catch(e) {
+  console.warn('Firebase init failed:', e);
+}
 
 async function syncLoad() {
+  // Always load from localStorage immediately so the app works instantly
+  const lt = localStorage.getItem('dp_tasks');
+  const le = localStorage.getItem('dp_events');
+  if (lt) try { tasks = JSON.parse(lt); } catch(e) {}
+  if (le) try { events = JSON.parse(le); } catch(e) {}
+
+  if (!db) { showSyncStatus('offline'); return; }
+
+  // Then try Firebase with a 5s timeout so slow connections don't block
   try {
     const ref = doc(db, 'planner', 'data');
-    const snap = await getDoc(ref);
+    const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000));
+    const snap = await Promise.race([getDoc(ref), timeoutPromise]);
     if (snap.exists()) {
       const d = snap.data();
-      tasks = d.tasks || [];
-      events = d.events || [];
+      // Use Firebase data if it's newer or localStorage was empty
+      if (!lt || (d.updated && d.updated > (JSON.parse(lt).updated || 0))) {
+        tasks = d.tasks || [];
+        events = d.events || [];
+      }
     } else {
-      // first time — seed from localStorage if anything there
-      const lt = localStorage.getItem('dp_tasks');
-      const le = localStorage.getItem('dp_events');
-      if (lt) tasks = JSON.parse(lt);
-      if (le) events = JSON.parse(le);
+      // First time using Firebase — push localStorage data up
+      if (tasks.length || events.length) {
+        await setDoc(ref, { tasks, events, updated: Date.now() });
+      }
     }
     syncEnabled = true;
     showSyncStatus('synced');
-    // live listener
+
+    // Live listener for cross-device sync
     onSnapshot(ref, (snap) => {
       if (!snap.exists()) return;
       const d = snap.data();
-      // only update if changed externally (compare JSON)
       const incoming = JSON.stringify({ tasks: d.tasks, events: d.events });
       const current  = JSON.stringify({ tasks, events });
       if (incoming !== current) {
         tasks = d.tasks || [];
         events = d.events || [];
-        // stop running timers that no longer exist
         Object.keys(timers).forEach(id => {
           if (!tasks.find(t => t.id === id)) { clearInterval(timers[id]); delete timers[id]; }
         });
@@ -1114,12 +1295,10 @@ async function syncLoad() {
       }
     });
   } catch(e) {
-    console.warn('Firebase load failed, using localStorage', e);
-    const lt = localStorage.getItem('dp_tasks');
-    const le = localStorage.getItem('dp_events');
-    if (lt) tasks = JSON.parse(lt);
-    if (le) events = JSON.parse(le);
+    console.warn('Firebase sync failed, running offline:', e.message);
     showSyncStatus('offline');
+    // Retry after 30s in case it was just a momentary network issue
+    setTimeout(syncLoad, 30000);
   }
 }
 
@@ -1681,6 +1860,107 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+
+
+// ===== CLOCK MODE =====
+let clockModeOpen = false;
+let clockModeInterval = null;
+
+function openClockMode() {
+  clockModeOpen = true;
+  document.getElementById('clockOverlay').classList.add('open');
+  updateClockMode();
+  clockModeInterval = setInterval(updateClockMode, 1000);
+}
+
+function closeClockMode() {
+  clockModeOpen = false;
+  document.getElementById('clockOverlay').classList.remove('open');
+  clearInterval(clockModeInterval);
+}
+
+function updateClockMode() {
+  const now = new Date();
+  const h = now.getHours();
+  const m = now.getMinutes();
+  const s = now.getSeconds();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  const pad = n => String(n).padStart(2,'0');
+
+  // Update time
+  const cmTime = document.getElementById('cmTime');
+  cmTime.childNodes[0].textContent = `${pad(h12)}:${pad(m)}:${pad(s)}`;
+  document.getElementById('cmAmpm').textContent = ampm;
+  document.getElementById('cmDate').textContent =
+    DAYS[now.getDay()] + ', ' + MONTHS[now.getMonth()] + ' ' + now.getDate() + ', ' + now.getFullYear();
+
+  const nowMins = h * 60 + m;
+
+  // Active tasks (running timers)
+  const activeTasks = tasks.filter(t => t.running);
+  const activeEl = document.getElementById('cmActiveItems');
+  const activeLbl = document.getElementById('cmActiveLabel');
+
+  if (activeTasks.length) {
+    activeLbl.textContent = 'Active task';
+    activeEl.innerHTML = activeTasks.map(t => {
+      const total = t.duration * 60;
+      const elapsed = t.elapsed || 0;
+      const pct = Math.min(elapsed / total, 1);
+      const remaining = Math.max(total - elapsed, 0);
+      const timerClass = pct > 0.85 ? 'danger' : pct > 0.65 ? 'warn' : '';
+      const barColor = pct > 0.85 ? '#E74C3C' : pct > 0.65 ? '#E67E22' : pct > 0.4 ? '#F1C40F' : '#52e89e';
+      return `<div class="cm-item active-item">
+        <div class="cm-item-dot active"></div>
+        <div class="cm-item-info">
+          <div class="cm-item-name">${escHtml(t.name)}</div>
+          <div class="cm-item-meta">${t.duration} min · ${impLabel(t.importance)}</div>
+          <div class="cm-timer-bar"><div class="cm-timer-fill" style="width:${pct*100}%;background:${barColor};"></div></div>
+        </div>
+        <div class="cm-timer ${timerClass}">${fmtTime(remaining)}</div>
+      </div>`;
+    }).join('');
+  } else {
+    activeLbl.textContent = 'No active tasks';
+    activeEl.innerHTML = '<div class="cm-empty">Nothing running right now.</div>';
+  }
+
+  // Upcoming in next 60 mins
+  const upcoming = [];
+  tasks.forEach(t => {
+    if (!t.startTime) return;
+    const [th, tm] = t.startTime.split(':').map(Number);
+    const taskMins = th * 60 + tm;
+    const diff = taskMins - nowMins;
+    if (diff >= 0 && diff <= 60) upcoming.push({ ...t, diff, isEvent: false });
+  });
+  events.forEach(ev => {
+    if (!ev.time || !eventOccursOn(ev, now)) return;
+    const [eh, em] = ev.time.split(':').map(Number);
+    const evMins = eh * 60 + em;
+    const diff = evMins - nowMins;
+    if (diff >= 0 && diff <= 60) upcoming.push({ ...ev, diff, isEvent: true });
+  });
+  upcoming.sort((a, b) => a.diff - b.diff);
+
+  const upcomingEl = document.getElementById('cmUpcomingItems');
+  if (upcoming.length) {
+    upcomingEl.innerHTML = upcoming.map(item => {
+      const diffLabel = item.diff === 0 ? 'Now' : `in ${item.diff} min`;
+      return `<div class="cm-item">
+        <div class="cm-item-dot ${item.isEvent ? 'ev' : ''}"></div>
+        <div class="cm-item-info">
+          <div class="cm-item-name">${escHtml(item.name)}</div>
+          <div class="cm-item-meta">${item.isEvent ? 'Event' : 'Task'} · ${item.duration} min · ${impLabel(item.importance)}</div>
+        </div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.5);white-space:nowrap;">${diffLabel}</div>
+      </div>`;
+    }).join('');
+  } else {
+    upcomingEl.innerHTML = '<div class="cm-empty">Nothing in the next hour.</div>';
+  }
+}
 
 // ===== ORIENTATION =====
 let orientationLocked = false;
