@@ -75,21 +75,15 @@ async function syncLoad() {
   }
 }
 
-let _saveTimer = null;
 async function syncSave() {
-  // Immediate localStorage backup
   localStorage.setItem('dp_tasks',     JSON.stringify(tasks));
   localStorage.setItem('dp_events',    JSON.stringify(events));
   localStorage.setItem('dp_deadlines', JSON.stringify(deadlines));
   if (!syncEnabled || !db) return;
-  // Debounce Firebase to max once per 5 seconds
-  clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(async () => {
-    try {
-      await db.collection('planner').doc('data').set({ tasks, events, deadlines, updated: Date.now() });
-      showSyncStatus('synced');
-    } catch(e) { showSyncStatus('error'); }
-  }, 5000);
+  try {
+    await db.collection('planner').doc('data').set({ tasks, events, deadlines, updated: Date.now() });
+    showSyncStatus('synced');
+  } catch(e) { showSyncStatus('error'); }
 }
 
 function showSyncStatus(state) {
@@ -149,13 +143,6 @@ function deleteTask(id) {
   stopTimer(id);
   tasks = tasks.filter(t => t.id !== id);
   save(); renderTasks(); renderCalendar(); renderTimeline();
-}
-
-function toggleTaskDone(id) {
-  const t=tasks.find(t=>t.id===id); if(!t) return;
-  t.done=!t.done;
-  if(t.done) stopTimer(id);
-  save(); renderTasks(); renderCalendar();
 }
 
 function startTimer(id) {
@@ -226,12 +213,9 @@ function renderTasks() {
     const total=task.duration*60, elapsed=task.elapsed||0;
     const pct=Math.min(elapsed/total,1), remaining=Math.max(total-elapsed,0);
     const td = task.running ? 'Remaining: '+fmtTime(remaining) : (elapsed>0?'Elapsed: '+fmtTime(elapsed):fmtTime(total)+' total');
-    return `<div class="task-card${task.running?' running':''}${task.done?' done':''}" id="task_${task.id}">
+    return `<div class="task-card${task.running?' running':''}" id="task_${task.id}">
       <div class="task-header">
-        <button class="done-btn${task.done?' done-active':''}" onclick="toggleTaskDone('${task.id}')" title="${task.done?'Unmark':'Complete'}">
-          ${task.done?'✓':'○'}
-        </button>
-        <div class="task-name${task.done?' done-name':''}">${escHtml(task.name)}</div>
+        <div class="task-name">${escHtml(task.name)}</div>
         <span class="importance-badge ${impClass(task.importance)}">${impLabel(task.importance)}</span>
       </div>
       <div class="task-meta"><span>⏱ ${task.duration} min</span>${task.startTime?`<span>🕐 ${task.startTime}</span>`:''}</div>
@@ -293,11 +277,6 @@ function addEvent() {
 
 function deleteEvent(id) { events=events.filter(e=>e.id!==id); save(); renderEventList(); renderCalendar(); renderTimeline(); }
 
-function toggleEventDone(id) {
-  const ev=events.find(e=>e.id===id); if(!ev) return;
-  ev.done=!ev.done; save(); renderEventList(); renderCalendar();
-}
-
 function toggleEditEvent(id) {
   const form = document.getElementById('evedit_'+id); if (!form) return;
   form.classList.toggle('open');
@@ -324,10 +303,7 @@ function renderEventList() {
     else sl=(ev.schedDays||[]).map(d=>DAYS[d]).join(', ');
     if(ev.recurring&&ev.scheduleType!=='once') sl+=` · every ${ev.recurWeeks}w`;
     return `<div class="event-card" id="evcard_${ev.id}">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
-        <button class="done-btn${ev.done?' done-active':''}" onclick="toggleEventDone('${ev.id}')" title="${ev.done?'Unmark':'Complete'}">${ev.done?'✓':'○'}</button>
-        <div class="ev-name${ev.done?' done-name':''}" style="margin:0;">${escHtml(ev.name)}</div>
-      </div>
+      <div class="ev-name">${escHtml(ev.name)}</div>
       <div class="ev-meta">${sl}${ev.time?' · '+ev.time:''} · ${ev.duration} min · <span class="${impClass(ev.importance)}" style="font-size:10px;padding:1px 5px;border-radius:8px;font-weight:600;">${impLabel(ev.importance)}</span></div>
       <div class="ev-actions">
         <button class="icon-btn" onclick="toggleEditEvent('${ev.id}')">✏ Edit</button>
@@ -376,12 +352,7 @@ function addDeadline() {
   saveDeadlines(); document.getElementById('newDlName').value=''; renderDeadlines();
 }
 
-function deleteDeadline(id) { deadlines=deadlines.filter(d=>d.id!==id); saveDeadlines(); renderDeadlines(); renderCalendar(); }
-
-function toggleDeadlineDone(id) {
-  const dl=deadlines.find(d=>d.id===id); if(!dl) return;
-  dl.done=!dl.done; saveDeadlines(); renderDeadlines(); renderCalendar();
-}
+function deleteDeadline(id) { deadlines=deadlines.filter(d=>d.id!==id); saveDeadlines(); renderDeadlines(); }
 
 function toggleEditDeadline(id) { document.getElementById('dledit_'+id)?.classList.toggle('open'); }
 
@@ -411,8 +382,7 @@ function renderDeadlines() {
     const cd=deadlineCountdown(dl.date);
     return `<div class="deadline-card" id="dlcard_${dl.id}">
       <div class="deadline-header">
-        <button class="done-btn${dl.done?' done-active':''}" onclick="toggleDeadlineDone('${dl.id}')" title="${dl.done?'Unmark':'Complete'}">${dl.done?'✓':'○'}</button>
-        <div class="deadline-name${dl.done?' done-name':''}">${escHtml(dl.name)}</div>
+        <div class="deadline-name">${escHtml(dl.name)}</div>
         <span class="importance-badge ${impClass(dl.importance)}">${impLabel(dl.importance)}</span>
       </div>
       <div class="deadline-meta"><span>📅 ${dl.date}</span><span class="deadline-countdown ${cd.cls}">${cd.label}</span></div>
@@ -657,23 +627,14 @@ function playAlarmSound() {
   try {
     if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
     if(audioCtx.state==='suspended') audioCtx.resume();
-    const t=audioCtx.currentTime;
-    const master=audioCtx.createGain(); master.gain.value=1.0; master.connect(audioCtx.destination);
-    const comp=audioCtx.createDynamicsCompressor();
-    comp.threshold.value=-6; comp.ratio.value=4; comp.connect(master);
-    const beep=(freq,type,start,dur,vol)=>{
+    const beep=(freq,start,dur)=>{
       const osc=audioCtx.createOscillator(),g=audioCtx.createGain();
-      osc.connect(g); g.connect(comp);
-      osc.frequency.value=freq; osc.type=type||'sawtooth';
-      g.gain.setValueAtTime(vol||0.9,t+start);
-      g.gain.exponentialRampToValueAtTime(0.001,t+start+dur);
-      osc.start(t+start); osc.stop(t+start+dur+0.05);
+      osc.connect(g);g.connect(audioCtx.destination);osc.frequency.value=freq;osc.type='sine';
+      g.gain.setValueAtTime(0.45,audioCtx.currentTime+start);g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+start+dur);
+      osc.start(audioCtx.currentTime+start);osc.stop(audioCtx.currentTime+start+dur+0.05);
     };
-    for(let i=0;i<10;i++){
-      beep(1047,'sawtooth',i*0.5,    0.2, 0.9);
-      beep(1319,'square',  i*0.5+0.22,0.15,0.7);
-    }
-    alarmAudio=setTimeout(playAlarmSound,5200);
+    for(let i=0;i<6;i++){beep(880,i*0.6,0.2);beep(1100,i*0.6+0.25,0.15);}
+    alarmAudio=setTimeout(playAlarmSound,4000);
   } catch(e){}
 }
 
@@ -855,41 +816,23 @@ function checkAutoStart(now) {
 // ── MOBILE NAV ──
 function mobileTab(tab) {
   document.querySelectorAll('.mnav-btn').forEach(b=>b.classList.remove('active'));
-  const btn=document.getElementById('mnav-'+tab); if(btn) btn.classList.add('active');
+  const btn=document.getElementById('mnav-'+tab);if(btn)btn.classList.add('active');
   if(window.innerWidth>900) return;
   const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
-  // Hide all
-  [tp,ma].forEach(el=>{if(el){el.classList.add('hidden-mobile');el.style.display='none';}});
-  if(cp){cp.style.display='none';}
-  if(tab==='tasks'){
-    tp.classList.remove('hidden-mobile'); tp.style.display='';
-    document.getElementById('mainTasks').style.display='';
-    document.getElementById('mainTimeline').style.display='none';
-  } else if(tab==='timeline'){
-    ma.classList.remove('hidden-mobile'); ma.style.display='';
-    document.getElementById('mainTasks').style.display='none';
-    document.getElementById('mainTimeline').style.display=''; renderTimeline();
-  } else if(tab==='calendar'){
-    if(cp) cp.style.display='block';
-  }
+  [tp,ma,cp].forEach(el=>{if(el)el.classList.add('hidden-mobile');});
+  if(tab==='tasks'){tp.classList.remove('hidden-mobile');document.getElementById('mainTasks').style.display='';document.getElementById('mainTimeline').style.display='none';}
+  else if(tab==='timeline'){ma.classList.remove('hidden-mobile');document.getElementById('mainTasks').style.display='none';document.getElementById('mainTimeline').style.display='';renderTimeline();}
+  else if(tab==='calendar'){cp.classList.remove('hidden-mobile');}
 }
 
 function handleResize() {
   const isMobile=window.innerWidth<=900;
   const mobileNav=document.getElementById('mobileNav');
-  // Always hide terminal on mobile
-  const termP=document.getElementById('termPanel'), termT=document.getElementById('termToggle');
-  if(isMobile){
-    if(termP) termP.style.display='none';
-    if(termT) termT.style.display='none';
-    mobileNav.style.display='block';
-    mobileTab('tasks');
-  } else {
-    if(termT) termT.style.display='flex';
+  if(isMobile){mobileNav.style.display='block';mobileTab('tasks');}
+  else{
     mobileNav.style.display='none';
     const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
-    [tp,ma].forEach(el=>{if(el){el.classList.remove('hidden-mobile');el.style.display='';}});
-    if(cp){cp.style.display='';cp.classList.remove('hidden-mobile');}
+    [tp,ma,cp].forEach(el=>{if(el)el.classList.remove('hidden-mobile');});
   }
 }
 window.addEventListener('resize',handleResize);
@@ -1416,7 +1359,6 @@ window.addEventListener('load', () => {
 
 // ── EXPOSE TO WINDOW ──
 Object.assign(window,{
-  toggleTaskDone, toggleEventDone, toggleDeadlineDone,
   addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
   addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
   addDeadline,deleteDeadline,toggleEditDeadline,saveEditDeadline,
