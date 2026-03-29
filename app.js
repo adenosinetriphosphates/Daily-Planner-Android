@@ -1,1451 +1,482 @@
-(function() {
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-// ── APP STATE ──
-let tasks = [];
-let events = [];
-let deadlines = [];
-let db = null;
-let syncEnabled = false;
-let audioCtx = null;
-
-const firebaseConfig = {
-  apiKey: "AIzaSyBK9sjOnHmeoRqHz6sz31wYSClKYjKZYyQ",
-  authDomain: "daily-planner-9ce7a.firebaseapp.com",
-  projectId: "daily-planner-9ce7a",
-  storageBucket: "daily-planner-9ce7a.firebasestorage.app",
-  messagingSenderId: "776129481231",
-  appId: "1:776129481231:web:098c5a5dfe0befb4fc317a"
-};
-
-try {
-  firebase.initializeApp(firebaseConfig);
-  db = firebase.firestore();
-} catch(e) { console.warn('Firebase init failed:', e); }
-
-// ── FIREBASE SYNC ──
-async function syncLoad() {
-  const lt = localStorage.getItem('dp_tasks');
-  const le = localStorage.getItem('dp_events');
-  const ld = localStorage.getItem('dp_deadlines');
-  if (lt) try { tasks = JSON.parse(lt); } catch(e) {}
-  if (le) try { events = JSON.parse(le); } catch(e) {}
-  if (ld) try { deadlines = JSON.parse(ld); } catch(e) {}
-
-  if (!db) { showSyncStatus('offline'); return; }
-
-  try {
-    const ref = db.collection('planner').doc('data');
-    const timeoutPromise = new Promise((_,rej) => setTimeout(() => rej(new Error('timeout')), 5000));
-    const snap = await Promise.race([ref.get(), timeoutPromise]);
-
-    if (snap.exists) {
-      const d = snap.data();
-      if (!lt || (d.updated && d.updated > (JSON.parse(lt).updated || 0))) {
-        tasks     = d.tasks     || [];
-        events    = d.events    || [];
-        deadlines = d.deadlines || [];
-      }
-    } else {
-      if (tasks.length || events.length || deadlines.length) {
-        await ref.set({ tasks, events, deadlines, updated: Date.now() });
-      }
-    }
-    syncEnabled = true;
-    showSyncStatus('synced');
-
-    ref.onSnapshot(snap => {
-      if (!snap.exists) return;
-      const d = snap.data();
-      const incoming = JSON.stringify({ tasks: d.tasks, events: d.events, deadlines: d.deadlines });
-      const current  = JSON.stringify({ tasks, events, deadlines });
-      if (incoming !== current) {
-        tasks     = d.tasks     || [];
-        events    = d.events    || [];
-        deadlines = d.deadlines || [];
-        Object.keys(timers).forEach(id => {
-          if (!tasks.find(t => t.id === id)) { clearInterval(timers[id]); delete timers[id]; }
-        });
-        renderTasks(); renderEventList(); renderCalendar(); renderTimeline(); renderDeadlines();
-      }
-    });
-  } catch(e) {
-    console.warn('Firebase sync failed:', e.message);
-    showSyncStatus('offline');
-    setTimeout(syncLoad, 30000);
-  }
+:root {
+  --bg: #F7F5F0; --surface: #FFFFFF; --surface2: #F0EDE6;
+  --border: #E0DBD0; --border2: #CBC5B8;
+  --text: #1C1A17; --text2: #6B6558; --text3: #9E9588;
+  --accent: #2D6A4F; --accent2: #40916C; --accent-light: #D8F3DC;
+  --danger: #C0392B; --radius: 10px;
+  --shadow: 0 1px 4px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.04);
 }
 
-let _saveTimer = null;
-async function syncSave() {
-  // Always save to localStorage immediately
-  localStorage.setItem('dp_tasks',     JSON.stringify(tasks));
-  localStorage.setItem('dp_events',    JSON.stringify(events));
-  localStorage.setItem('dp_deadlines', JSON.stringify(deadlines));
-  if (!syncEnabled || !db) return;
-  // Debounce Firebase writes to at most once every 5 seconds
-  clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(async () => {
-    try {
-      await db.collection('planner').doc('data').set({ tasks, events, deadlines, updated: Date.now() });
-      showSyncStatus('synced');
-    } catch(e) { showSyncStatus('error'); }
-  }, 5000);
+body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px; line-height: 1.5; }
+h1, h2, .serif { font-family: 'DM Serif Display', serif; }
+
+.app { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+.app-body { display: grid; grid-template-columns: 340px 1fr 300px; flex: 1; overflow: hidden; }
+
+@media (max-width: 900px) {
+  .app-body { display: flex; flex-direction: column; overflow: visible; }
+  .panel, .main-area { height: auto !important; overflow-y: visible !important; border-right: none !important; border-left: none !important; border-bottom: 1px solid var(--border); padding-bottom: 80px; }
+  .mobile-nav { display: flex !important; }
+  .panel.hidden-mobile, .main-area.hidden-mobile { display: none; }
+  .clockbar { flex-wrap: wrap; gap: 8px; justify-content: center; padding: 8px 12px; }
+  .clock-time { font-size: 22px; } .clock-date { font-size: 11px; } .clock-sep { display: none; }
+  .topbar { padding: 10px 14px; flex-wrap: wrap; gap: 8px; }
+  .topbar h1 { font-size: 18px; }
+  .tab-group { order: 3; width: 100%; } .tab-btn { flex: 1; text-align: center; }
 }
 
-function showSyncStatus(state) {
-  const el = document.getElementById('syncStatus');
-  if (!el) return;
-  if (state === 'synced')  { el.textContent = '☁ Synced';   el.style.color = 'rgba(255,255,255,0.75)'; }
-  if (state === 'offline') { el.textContent = '⚠ Offline';  el.style.color = '#F1C40F'; }
-  if (state === 'error')   { el.textContent = '✕ Sync err'; el.style.color = '#E74C3C'; }
+/* Clockbar */
+.clockbar { background: var(--accent); padding: 8px 28px; display: flex; align-items: center; justify-content: center; gap: 20px; }
+.clock-time { font-family: 'DM Serif Display', serif; font-size: 28px; color: #fff; letter-spacing: 2px; font-variant-numeric: tabular-nums; line-height: 1; }
+.clock-ampm { font-size: 13px; color: rgba(255,255,255,0.7); font-weight: 500; margin-left: 4px; vertical-align: super; }
+.clock-sep { width: 1px; height: 22px; background: rgba(255,255,255,0.25); }
+.clock-date { font-size: 13px; color: rgba(255,255,255,0.8); }
+.autostart-badge { font-size: 11px; background: rgba(255,255,255,0.18); color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.3); border-radius: 20px; padding: 3px 10px; display: flex; align-items: center; gap: 5px; }
+.autostart-dot { width: 6px; height: 6px; border-radius: 50%; background: #52e89e; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1;}50%{opacity:0.3;} }
+.wakelock-btn { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.35); border-radius: 20px; padding: 4px 13px; font-family: 'DM Sans',sans-serif; font-size: 12px; color: rgba(255,255,255,0.92); cursor: pointer; display: flex; align-items: center; gap: 6px; transition: background 0.15s; }
+.wakelock-btn:hover { background: rgba(255,255,255,0.25); }
+.wakelock-btn.active { background: rgba(255,255,255,0.28); border-color: rgba(255,255,255,0.6); }
+.wakelock-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.4); }
+.wakelock-btn.active .wakelock-dot { background: #52e89e; animation: pulse 1.5s infinite; }
+.clock-mode-btn { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.35); border-radius: 20px; padding: 4px 13px; font-family: 'DM Sans',sans-serif; font-size: 12px; color: rgba(255,255,255,0.92); cursor: pointer; transition: background 0.15s; }
+.clock-mode-btn:hover { background: rgba(255,255,255,0.25); }
+
+/* Topbar */
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 28px; display: flex; align-items: center; gap: 20px; }
+.topbar h1 { font-size: 22px; color: var(--text); letter-spacing: -0.3px; }
+.topbar .date-badge { font-size: 13px; color: var(--text2); background: var(--surface2); padding: 4px 12px; border-radius: 20px; border: 1px solid var(--border); }
+.topbar .spacer { flex: 1; }
+.topbar .tab-group { display: flex; background: var(--surface2); border-radius: 8px; padding: 3px; gap: 2px; }
+.tab-btn { background: none; border: none; padding: 6px 14px; border-radius: 6px; font-family: 'DM Sans',sans-serif; font-size: 13px; color: var(--text2); cursor: pointer; transition: all 0.15s; }
+.tab-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-weight: 500; }
+
+/* Panels */
+.panel { background: var(--surface); border-right: 1px solid var(--border); padding: 20px; overflow-y: auto; height: calc(100dvh - 117px); }
+.panel.right { border-right: none; border-left: 1px solid var(--border); }
+.main-area { padding: 20px 24px; overflow-y: auto; height: calc(100dvh - 117px); }
+.mobile-nav { display: none; position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--border); z-index: 100; padding: 6px 0 env(safe-area-inset-bottom,6px); }
+.mobile-nav-inner { display: flex; justify-content: space-around; align-items: center; }
+.mnav-btn { background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 16px; cursor: pointer; color: var(--text3); font-family: 'DM Sans',sans-serif; font-size: 10px; font-weight: 500; border-radius: 8px; transition: color 0.15s; min-width: 60px; }
+.mnav-btn.active { color: var(--accent); }
+.mnav-icon { font-size: 20px; line-height: 1; }
+.section-title { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: var(--text3); text-transform: uppercase; margin-bottom: 12px; }
+
+/* Forms */
+.add-task-form { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 16px; }
+.add-task-form input[type="text"] { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-family: 'DM Sans',sans-serif; font-size: 13px; background: var(--surface); color: var(--text); outline: none; margin-bottom: 8px; }
+.add-task-form input[type="text"]:focus { border-color: var(--accent2); }
+.form-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.form-row label { font-size: 12px; color: var(--text2); white-space: nowrap; }
+.form-row select, .form-row input[type="number"] { flex: 1; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-family: 'DM Sans',sans-serif; font-size: 12px; background: var(--surface); color: var(--text); outline: none; }
+.form-row select:focus, .form-row input[type="number"]:focus { border-color: var(--accent2); }
+.btn { background: var(--accent); color: white; border: none; border-radius: 7px; padding: 8px 16px; font-family: 'DM Sans',sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: background 0.15s; width: 100%; }
+.btn:hover { background: var(--accent2); }
+.btn.secondary { background: none; color: var(--text2); border: 1px solid var(--border2); }
+.btn.secondary:hover { background: var(--surface2); color: var(--text); }
+
+/* Tasks */
+.task-list { display: flex; flex-direction: column; gap: 8px; }
+.task-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; transition: box-shadow 0.15s; }
+.task-card:hover { box-shadow: var(--shadow); }
+.task-card.running { border-color: var(--accent2); }
+.task-header { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 6px; }
+.task-name { font-size: 14px; font-weight: 500; flex: 1; word-break: break-word; }
+.importance-badge { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
+.imp-low { background: #EAF3DE; color: #3B6D11; } .imp-medium { background: #FFF3CD; color: #856404; }
+.imp-high { background: #FAEEDA; color: #854F0B; } .imp-critical { background: #FCEBEB; color: #A32D2D; }
+.task-meta { font-size: 12px; color: var(--text2); display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.timer-bar-wrap { height: 5px; background: var(--surface2); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+.timer-bar { height: 100%; border-radius: 3px; transition: width 1s linear, background-color 0.5s; }
+.timer-display { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text2); margin-bottom: 8px; }
+.task-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.icon-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--text2); cursor: pointer; transition: all 0.12s; }
+.icon-btn:hover { background: var(--surface2); color: var(--text); }
+.icon-btn.start-btn { border-color: var(--accent2); color: var(--accent); }
+.icon-btn.start-btn:hover { background: var(--accent-light); }
+.icon-btn.stop-btn { border-color: var(--border2); color: var(--danger); }
+.icon-btn.del-btn { border-color: #e8b0ab; color: var(--danger); }
+.edit-form { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-top: 8px; display: none; }
+.edit-form.open { display: block; }
+.edit-form input, .edit-form select { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-family: 'DM Sans',sans-serif; font-size: 13px; background: var(--surface); color: var(--text); outline: none; margin-bottom: 7px; }
+.edit-form input:focus, .edit-form select:focus { border-color: var(--accent2); }
+.edit-actions { display: flex; gap: 6px; }
+
+/* Calendar */
+.cal-nav { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.cal-nav button { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 14px; color: var(--text2); transition: all 0.12s; }
+.cal-nav button:hover { background: var(--surface2); }
+.cal-nav .month-label { font-family: 'DM Serif Display',serif; font-size: 16px; color: var(--text); flex: 1; text-align: center; }
+.cal-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 2px; margin-bottom: 8px; }
+.cal-dow { text-align: center; font-size: 10px; font-weight: 600; color: var(--text3); padding: 6px 0; text-transform: uppercase; letter-spacing: 0.05em; }
+.cal-day { min-height: 42px; border-radius: 7px; padding: 4px; cursor: pointer; transition: background 0.12s; border: 1px solid transparent; }
+.cal-day:hover { background: var(--surface2); }
+.cal-day.today { border-color: var(--accent2); }
+.cal-day.selected { background: var(--accent-light); border-color: var(--accent2); }
+.cal-day.other-month .day-num { color: var(--text3); }
+.day-num { font-size: 12px; font-weight: 500; color: var(--text); display: block; text-align: center; line-height: 1; }
+.cal-day.today .day-num { background: var(--accent); color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto; }
+.day-dots { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 3px; justify-content: center; }
+.day-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent2); }
+.day-dot.event-dot { background: #8E44AD; }
+.day-detail { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-top: 14px; }
+.day-detail h3 { font-family: 'DM Serif Display',serif; font-size: 14px; margin-bottom: 10px; color: var(--text); }
+.day-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.day-item:last-child { border-bottom: none; }
+.day-item-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent2); margin-top: 3px; flex-shrink: 0; }
+.day-item-dot.ev { background: #8E44AD; }
+.day-item-name { font-weight: 500; color: var(--text); } .day-item-sub { color: var(--text2); }
+
+/* Events */
+.toggle-btn { background: none; border: 1px dashed var(--border2); border-radius: 7px; padding: 8px 14px; width: 100%; font-family: 'DM Sans',sans-serif; font-size: 13px; color: var(--text2); cursor: pointer; text-align: center; transition: all 0.15s; }
+.toggle-btn:hover { border-color: var(--accent2); color: var(--accent); }
+.event-form { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-top: 10px; display: none; }
+.event-form.open { display: block; }
+.event-form input, .event-form select { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-family: 'DM Sans',sans-serif; font-size: 13px; background: var(--surface); color: var(--text); outline: none; margin-bottom: 8px; }
+.event-form input:focus, .event-form select:focus { border-color: var(--accent2); }
+.day-checkboxes { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.day-check-label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text2); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px; cursor: pointer; transition: all 0.12s; }
+.day-check-label:has(input:checked) { background: var(--accent-light); border-color: var(--accent2); color: var(--accent); }
+.day-check-label input { display: none; }
+.schedule-row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.schedule-row label { font-size: 12px; color: var(--text2); white-space: nowrap; }
+.event-list { display: flex; flex-direction: column; gap: 7px; margin-top: 14px; }
+.event-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid #8E44AD; border-radius: var(--radius); padding: 10px 12px; }
+.event-card .ev-name { font-weight: 500; font-size: 13px; margin-bottom: 3px; }
+.event-card .ev-meta { font-size: 11px; color: var(--text2); }
+.ev-actions { display: flex; gap: 5px; margin-top: 6px; }
+.ev-edit-form { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; margin-top: 8px; display: none; }
+.ev-edit-form.open { display: block; }
+.ev-edit-form input, .ev-edit-form select { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-family: 'DM Sans',sans-serif; font-size: 12px; background: var(--surface2); color: var(--text); outline: none; margin-bottom: 6px; display: block; }
+.ev-edit-form input:focus, .ev-edit-form select:focus { border-color: var(--accent2); background: var(--surface); }
+
+/* Deadlines */
+.deadline-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.deadline-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 13px; }
+.deadline-card:hover { box-shadow: var(--shadow); }
+.deadline-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.deadline-name { font-size: 13px; font-weight: 500; flex: 1; word-break: break-word; }
+.deadline-meta { font-size: 11px; color: var(--text2); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 7px; }
+.deadline-countdown { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
+.dl-overdue { background: #FCEBEB; color: #A32D2D; } .dl-today { background: #FFF3CD; color: #856404; }
+.dl-soon { background: #FAEEDA; color: #854F0B; } .dl-upcoming { background: #EAF3DE; color: #3B6D11; }
+.deadline-actions { display: flex; gap: 5px; }
+.deadline-edit-form { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; margin-top: 8px; display: none; }
+.deadline-edit-form.open { display: block; }
+.deadline-edit-form input, .deadline-edit-form select { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-family: 'DM Sans',sans-serif; font-size: 12px; background: var(--surface); color: var(--text); outline: none; margin-bottom: 6px; display: block; }
+.deadline-edit-form input:focus, .deadline-edit-form select:focus { border-color: var(--accent2); }
+
+/* Timeline */
+.timeline { position: relative; padding-left: 60px; }
+.timeline-hour { position: relative; min-height: 60px; border-top: 1px solid var(--border); }
+.timeline-label { position: absolute; left: -55px; top: -8px; font-size: 11px; color: var(--text3); font-variant-numeric: tabular-nums; width: 50px; text-align: right; }
+.timeline-block { background: var(--accent-light); border: 1px solid var(--accent2); border-radius: 6px; padding: 6px 10px; margin: 4px 0; font-size: 12px; }
+.timeline-block.event-block { background: #F3E8FA; border-color: #8E44AD; }
+.tl-name { font-weight: 500; color: var(--text); } .tl-meta { color: var(--text2); font-size: 11px; }
+
+/* Misc */
+::-webkit-scrollbar { width: 5px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+.empty-state { text-align: center; color: var(--text3); font-size: 13px; padding: 20px; font-style: italic; }
+.sep { height: 1px; background: var(--border); margin: 14px 0; }
+
+/* Clock Mode */
+.clock-mode-overlay { display: none; position: fixed; inset: 0; background: #000; z-index: 9999; flex-direction: column; align-items: center; justify-content: flex-start; padding: 28px 28px 80px; gap: 0; overflow-y: auto; }
+.clock-mode-overlay.open { display: flex; }
+.cm-time { font-family: 'DM Serif Display',serif; font-size: clamp(60px,13vw,130px); color: #fff; letter-spacing: -2px; line-height: 1; font-variant-numeric: tabular-nums; }
+.cm-ampm { font-size: clamp(16px,3vw,32px); color: rgba(255,255,255,0.45); font-weight: 300; margin-left: 8px; vertical-align: super; }
+.cm-date { font-size: clamp(12px,1.8vw,18px); color: rgba(255,255,255,0.45); margin-top: 6px; margin-bottom: 18px; font-weight: 300; letter-spacing: 0.05em; }
+.cm-divider { width: 100%; max-width: 640px; height: 1px; background: rgba(255,255,255,0.1); margin-bottom: 18px; }
+.cm-section-label { font-size: 10px; font-weight: 600; letter-spacing: 0.15em; text-transform: uppercase; color: rgba(255,255,255,0.3); margin-bottom: 10px; width: 100%; max-width: 640px; }
+.cm-items { width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.cm-item { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+.cm-item.active-item { background: rgba(45,106,79,0.35); border-color: rgba(64,145,108,0.5); }
+.cm-item-dot { width: 8px; height: 8px; border-radius: 50%; background: #40916C; flex-shrink: 0; }
+.cm-item-dot.ev { background: #8E44AD; } .cm-item-dot.active { background: #52e89e; animation: pulse 1.5s infinite; }
+.cm-item-info { flex: 1; }
+.cm-item-name { font-size: clamp(13px,1.8vw,15px); font-weight: 500; color: #fff; margin-bottom: 2px; }
+.cm-item-meta { font-size: 11px; color: rgba(255,255,255,0.45); }
+.cm-timer { font-family: 'DM Serif Display',serif; font-size: clamp(14px,2.2vw,20px); font-variant-numeric: tabular-nums; color: #52e89e; }
+.cm-timer.warn { color: #F1C40F; } .cm-timer.danger { color: #E74C3C; }
+.cm-timer-bar { width: 100%; height: 3px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+.cm-timer-fill { height: 100%; border-radius: 2px; background: #52e89e; transition: width 1s linear, background 0.5s; }
+.cm-empty { color: rgba(255,255,255,0.25); font-size: 13px; font-style: italic; }
+.cm-close { position: fixed; top: 14px; right: 18px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 50%; width: 36px; height: 36px; color: white; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s; z-index: 10000; }
+.cm-close:hover { background: rgba(255,255,255,0.2); }
+.cm-tabs { display: flex; gap: 6px; width: 100%; max-width: 640px; margin-bottom: 12px; }
+.cm-tab { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 6px 18px; font-family: 'DM Sans',sans-serif; font-size: 13px; color: rgba(255,255,255,0.5); cursor: pointer; transition: all 0.15s; }
+.cm-tab:hover { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.8); }
+.cm-tab.active { background: rgba(45,106,79,0.4); border-color: rgba(64,145,108,0.5); color: #52e89e; }
+.cm-weather-row { display: flex; gap: 10px; width: 100%; max-width: 640px; margin-bottom: 18px; flex-wrap: wrap; }
+.cm-weather { flex: 1; min-width: 170px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 12px 14px; }
+.cm-weather-day-label { font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255,255,255,0.3); margin-bottom: 8px; }
+.cm-weather-main { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.cm-weather-icon { font-size: 24px; line-height: 1; }
+.cm-weather-temp { font-family: 'DM Serif Display',serif; font-size: 24px; color: #fff; line-height: 1; }
+.cm-weather-desc { font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 2px; text-transform: capitalize; }
+.cm-weather-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.cm-weather-stat { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.cm-weather-stat-val { font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.85); }
+.cm-weather-stat-lbl { font-size: 9px; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 0.07em; }
+.cm-weather-loc { font-size: 10px; color: rgba(255,255,255,0.25); margin-top: 5px; }
+.cm-weather-loading { color: rgba(255,255,255,0.3); font-size: 12px; font-style: italic; }
+.cm-deadline-item { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; }
+.cm-deadline-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dl-dot-overdue { background: #E74C3C; } .dl-dot-today { background: #F1C40F; } .dl-dot-soon { background: #E67E22; } .dl-dot-upcoming { background: #52e89e; }
+.cm-deadline-name { font-size: 14px; font-weight: 500; color: #fff; margin-bottom: 2px; }
+.cm-deadline-sub { font-size: 11px; color: rgba(255,255,255,0.45); }
+.cm-deadline-countdown { font-size: 12px; font-weight: 600; white-space: nowrap; border-radius: 7px; padding: 2px 8px; }
+.cm-dl-overdue { color: #E74C3C; } .cm-dl-today { color: #F1C40F; } .cm-dl-soon { color: #E67E22; } .cm-dl-upcoming { color: #52e89e; }
+.cm-alarm-section { width: 100%; max-width: 640px; margin-bottom: 20px; }
+.cm-alarm-add { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.cm-alarm-time-input { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 7px 12px; color: white; font-family: 'DM Sans',sans-serif; font-size: 14px; outline: none; color-scheme: dark; }
+.cm-alarm-label-input { flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 7px 12px; color: white; font-family: 'DM Sans',sans-serif; font-size: 13px; outline: none; min-width: 100px; }
+.cm-alarm-label-input::placeholder { color: rgba(255,255,255,0.3); }
+.cm-alarm-add-btn { background: rgba(45,106,79,0.5); border: 1px solid rgba(64,145,108,0.5); border-radius: 8px; padding: 7px 14px; color: #52e89e; font-family: 'DM Sans',sans-serif; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.cm-alarm-list { display: flex; flex-direction: column; gap: 6px; }
+.cm-alarm-item { display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 10px 14px; }
+.cm-alarm-toggle { width: 36px; height: 20px; background: rgba(255,255,255,0.15); border-radius: 10px; border: none; cursor: pointer; position: relative; flex-shrink: 0; transition: background 0.2s; }
+.cm-alarm-toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: rgba(255,255,255,0.5); transition: transform 0.2s, background 0.2s; }
+.cm-alarm-toggle.on { background: rgba(45,106,79,0.7); }
+.cm-alarm-toggle.on::after { transform: translateX(16px); background: #52e89e; }
+.cm-alarm-info { flex: 1; }
+.cm-alarm-time-display { font-size: 16px; font-weight: 500; color: white; font-variant-numeric: tabular-nums; }
+.cm-alarm-label-display { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 1px; }
+.cm-alarm-del { background: none; border: none; color: rgba(255,255,255,0.2); font-size: 16px; cursor: pointer; padding: 4px; transition: color 0.15s; }
+.cm-alarm-del:hover { color: #E74C3C; }
+.alarm-ring-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 99999; flex-direction: column; align-items: center; justify-content: center; gap: 20px; }
+.alarm-ring-overlay.ringing { display: flex; }
+.alarm-ring-icon { font-size: 72px; animation: alarmBounce 0.5s infinite alternate; }
+@keyframes alarmBounce { from{transform:scale(1);}to{transform:scale(1.15) rotate(8deg);} }
+.alarm-ring-time { font-family: 'DM Serif Display',serif; font-size: 56px; color: white; }
+.alarm-ring-label { font-size: 20px; color: rgba(255,255,255,0.7); }
+.alarm-ring-dismiss { background: #E74C3C; border: none; border-radius: 50px; padding: 14px 40px; color: white; font-family: 'DM Sans',sans-serif; font-size: 16px; font-weight: 500; cursor: pointer; margin-top: 10px; }
+.alarm-ring-snooze { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 50px; padding: 10px 28px; color: white; font-family: 'DM Sans',sans-serif; font-size: 14px; cursor: pointer; }
+
+/* ── Clock mode new layout ── */
+.cm-deadline-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  width: 100%;
+  max-width: 800px;
+  margin-bottom: 18px;
+}
+.cm-dl-pill {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 14px;
+  border-radius: 20px;
+  white-space: nowrap;
+  border: 1px solid;
+}
+.cm-dl-pill-overdue  { background: rgba(231,76,60,0.2);  border-color: rgba(231,76,60,0.5);  color: #E74C3C; }
+.cm-dl-pill-today    { background: rgba(241,196,15,0.2);  border-color: rgba(241,196,15,0.5);  color: #F1C40F; }
+.cm-dl-pill-soon     { background: rgba(230,126,34,0.2);  border-color: rgba(230,126,34,0.5);  color: #E67E22; }
+.cm-dl-pill-upcoming { background: rgba(82,232,158,0.12); border-color: rgba(82,232,158,0.3);  color: #52e89e; }
+.cm-dl-pill-empty    { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); color: rgba(255,255,255,0.3); font-style: italic; }
+
+.cm-bottom-row {
+  display: flex;
+  gap: 20px;
+  width: 100%;
+  max-width: 800px;
+  align-items: flex-start;
+}
+.cm-bottom-left  { flex: 1; min-width: 0; }
+.cm-bottom-right { flex: 1; min-width: 0; }
+
+.cm-col-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.3);
+  margin-bottom: 10px;
 }
 
-// ── UTILS ──
-let calDate = new Date();
-let selectedDay = null;
-let timers = {};
-const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+/* Upcoming panel items */
+.cm-upcoming-list { display: flex; flex-direction: column; gap: 7px; }
+.cm-up-item {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 10px 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cm-up-item.cm-up-active {
+  background: rgba(45,106,79,0.3);
+  border-color: rgba(64,145,108,0.45);
+}
+.cm-up-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #40916C; flex-shrink: 0;
+}
+.cm-up-dot.ev { background: #8E44AD; }
+.cm-up-dot.active { background: #52e89e; animation: pulse 1.5s infinite; }
+.cm-up-info { flex: 1; min-width: 0; }
+.cm-up-name { font-size: 13px; font-weight: 500; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cm-up-sub  { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 1px; }
+.cm-up-time { font-size: 12px; color: rgba(255,255,255,0.45); white-space: nowrap; }
 
-function save() { syncSave(); }
-function uid()  { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
-function impClass(imp) { return {low:'imp-low',medium:'imp-medium',high:'imp-high',critical:'imp-critical'}[imp]||'imp-medium'; }
-function impLabel(imp) { return {low:'Low',medium:'Medium',high:'High',critical:'Critical!'}[imp]||imp; }
-function fmtTime(sec) {
-  const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
-  if(h>0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-}
-function timerColor(pct) {
-  if(pct>=0.85) return '#C0392B';
-  if(pct>0.65)  return '#E67E22';
-  if(pct>0.4)   return '#F1C40F';
-  return '#2D6A4F';
-}
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function toDateStr(d) {
-  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-}
-
-// ── TASKS ──
-function addTask() {
-  const name = document.getElementById('newTaskName').value.trim();
-  if (!name) return;
-  tasks.push({
-    id: uid(), name,
-    importance: document.getElementById('newTaskImp').value,
-    duration: parseInt(document.getElementById('newTaskDur').value)||30,
-    startTime: document.getElementById('newTaskTime').value||'',
-    elapsed:0, running:false, done:false
-  });
-  save();
-  document.getElementById('newTaskName').value = '';
-  renderTasks(); renderCalendar(); renderTimeline();
+/* Responsive: stack on narrow screens */
+@media (max-width: 600px) {
+  .cm-bottom-row { flex-direction: column; }
 }
 
-function deleteTask(id) {
-  stopTimer(id);
-  tasks = tasks.filter(t => t.id !== id);
-  save(); renderTasks(); renderCalendar(); renderTimeline();
+/* ── TERMINAL ── */
+.terminal-toggle {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 8px 16px;
+  color: #52e89e;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  cursor: pointer;
+  z-index: 500;
+  transition: all 0.15s;
+  display: none;
+  gap: 8px;
+  align-items: center;
 }
+.terminal-toggle:hover { background: #252525; border-color: #52e89e; }
+@media (min-width: 901px) { .terminal-toggle { display: flex; } }
 
-function toggleTaskDone(id) {
-  const t = tasks.find(t => t.id === id); if (!t) return;
-  t.done = !t.done;
-  if (t.done) stopTimer(id);
-  save(); renderTasks(); renderCalendar();
+.terminal-panel {
+  position: fixed;
+  bottom: 0; right: 0;
+  width: 480px;
+  height: 420px;
+  background: #0e0e0e;
+  border: 1px solid #2a2a2a;
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  display: none;
+  flex-direction: column;
+  z-index: 600;
+  box-shadow: 0 -8px 40px rgba(0,0,0,0.4);
+  font-family: 'Courier New', monospace;
 }
+.terminal-panel.open { display: flex; }
+@media (max-width: 900px) { .terminal-panel { display: none !important; } .terminal-toggle { display: none !important; } }
 
-function startTimer(id) {
-  const task = tasks.find(t => t.id === id);
-  if (!task || task.running) return;
-  task.running = true; save();
-  timers[id] = setInterval(() => {
-    const t = tasks.find(t => t.id === id);
-    if (!t) { clearInterval(timers[id]); return; }
-    t.elapsed = (t.elapsed||0) + 1;
-    if (t.elapsed >= t.duration*60) {
-      t.running = false; clearInterval(timers[id]); delete timers[id]; playTaskEndSound();
-    }
-    save(); updateTaskCard(id);
-  }, 1000);
-  updateTaskCard(id);
+.terminal-titlebar {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #1e1e1e;
+  gap: 8px;
+  cursor: move;
+  user-select: none;
 }
+.terminal-dot { width: 10px; height: 10px; border-radius: 50%; }
+.td-red { background: #ff5f57; }
+.td-yellow { background: #febc2e; }
+.td-green { background: #28c840; }
+.terminal-title { flex: 1; text-align: center; font-size: 11px; color: #555; letter-spacing: 0.05em; }
+.terminal-close-btn { background: none; border: none; color: #444; font-size: 14px; cursor: pointer; padding: 0 2px; }
+.terminal-close-btn:hover { color: #888; }
 
-function stopTimer(id) {
-  const task = tasks.find(t => t.id === id);
-  if (task) { task.running = false; save(); }
-  if (timers[id]) { clearInterval(timers[id]); delete timers[id]; }
-  updateTaskCard(id);
+.terminal-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #ccc;
 }
+.terminal-output::-webkit-scrollbar { width: 4px; }
+.terminal-output::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
 
-function resetTimer(id) {
-  stopTimer(id);
-  const task = tasks.find(t => t.id === id);
-  if (task) { task.elapsed = 0; save(); }
-  updateTaskCard(id);
+.t-line { margin-bottom: 1px; white-space: pre-wrap; word-break: break-word; }
+.t-prompt { color: #52e89e; }
+.t-cmd    { color: #ffffff; }
+.t-out    { color: #aaa; }
+.t-ok     { color: #52e89e; }
+.t-err    { color: #e74c3c; }
+.t-warn   { color: #f1c40f; }
+.t-head   { color: #7ec8e3; font-weight: bold; }
+.t-dim    { color: #555; }
+
+.terminal-input-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+  border-top: 1px solid #1e1e1e;
+  gap: 6px;
 }
-
-function updateTaskCard(id) {
-  const task = tasks.find(t => t.id === id);
-  if (!task) return;
-  const el = document.getElementById('task_' + id);
-  if (!el) return;
-  const total = task.duration*60, elapsed = task.elapsed||0;
-  const pct = Math.min(elapsed/total, 1);
-  const bar = el.querySelector('.timer-bar');
-  const display = el.querySelector('.timer-display');
-  const remaining = Math.max(total-elapsed, 0);
-  if (bar)     { bar.style.width = (pct*100)+'%'; bar.style.background = timerColor(pct); }
-  if (display) { display.textContent = task.running ? 'Remaining: '+fmtTime(remaining) : (elapsed>0?'Elapsed: '+fmtTime(elapsed):fmtTime(total)+' total'); }
-  const sb = el.querySelector('.start-btn'); const pb = el.querySelector('.stop-btn');
-  if (sb) sb.style.display = task.running ? 'none' : '';
-  if (pb) pb.style.display = task.running ? '' : 'none';
-  el.classList.toggle('running', task.running);
+.terminal-prompt-label { color: #52e89e; font-size: 13px; white-space: nowrap; font-family: 'Courier New', monospace; }
+.terminal-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: #fff;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  caret-color: #52e89e;
 }
+.terminal-input::placeholder { color: #333; }
 
-function toggleEditTask(id) { document.getElementById('editForm_'+id)?.classList.toggle('open'); }
-
-function saveEditTask(id) {
-  const task = tasks.find(t => t.id === id); if (!task) return;
-  const n = document.getElementById('editName_'+id).value.trim();
-  if (n) task.name = n;
-  task.importance = document.getElementById('editImp_'+id).value;
-  task.duration   = parseInt(document.getElementById('editDur_'+id).value)||task.duration;
-  task.startTime  = document.getElementById('editTime_'+id).value;
-  task.elapsed = 0; stopTimer(id); save();
-  renderTasks(); renderCalendar(); renderTimeline();
+/* ── DONE / COMPLETE STYLES ── */
+.done-btn {
+  background: none;
+  border: 1.5px solid var(--border2);
+  border-radius: 50%;
+  width: 22px; height: 22px;
+  font-size: 11px;
+  color: var(--text3);
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+  padding: 0;
 }
+.done-btn:hover { border-color: var(--accent2); color: var(--accent); }
+.done-btn.done-active { background: var(--accent); border-color: var(--accent); color: white; }
+.done-name { text-decoration: line-through; opacity: 0.45; }
+.task-card.done { opacity: 0.6; }
+.task-card.done .timer-bar { opacity: 0.3; }
 
-function renderTasks() {
-  const list = document.getElementById('taskList');
-  if (!tasks.length) { list.innerHTML='<div class="empty-state">No tasks yet. Add one above!</div>'; return; }
-  list.innerHTML = tasks.map(task => {
-    const total=task.duration*60, elapsed=task.elapsed||0;
-    const pct=Math.min(elapsed/total,1), remaining=Math.max(total-elapsed,0);
-    const td = task.running ? 'Remaining: '+fmtTime(remaining) : (elapsed>0?'Elapsed: '+fmtTime(elapsed):fmtTime(total)+' total');
-    return `<div class="task-card${task.running?' running':''}${task.done?' done':''}" id="task_${task.id}">
-      <div class="task-header">
-        <button class="done-btn${task.done?' done-active':''}" onclick="toggleTaskDone('${task.id}')" title="${task.done?'Mark incomplete':'Mark complete'}">
-          ${task.done?'✓':'○'}
-        </button>
-        <div class="task-name${task.done?' done-name':''}">${escHtml(task.name)}</div>
-        <span class="importance-badge ${impClass(task.importance)}">${impLabel(task.importance)}</span>
-      </div>
-      <div class="task-meta"><span>⏱ ${task.duration} min</span>${task.startTime?`<span>🕐 ${task.startTime}</span>`:''}</div>
-      <div class="timer-bar-wrap"><div class="timer-bar" style="width:${pct*100}%;background:${timerColor(pct)};"></div></div>
-      <div class="timer-display">${td}</div>
-      <div class="task-actions">
-        <button class="icon-btn start-btn" style="${task.running?'display:none':''}" onclick="startTimer('${task.id}')">▶ Start</button>
-        <button class="icon-btn stop-btn"  style="${!task.running?'display:none':''}" onclick="stopTimer('${task.id}')">⏸ Pause</button>
-        <button class="icon-btn" onclick="resetTimer('${task.id}')">↺ Reset</button>
-        <button class="icon-btn" onclick="toggleEditTask('${task.id}')">✏ Edit</button>
-        <button class="icon-btn del-btn" onclick="deleteTask('${task.id}')">✕</button>
-      </div>
-      <div class="edit-form" id="editForm_${task.id}">
-        <input type="text" id="editName_${task.id}" value="${escHtml(task.name)}" placeholder="Task name" />
-        <select id="editImp_${task.id}">
-          <option value="low"${task.importance==='low'?' selected':''}>Low</option>
-          <option value="medium"${task.importance==='medium'?' selected':''}>Medium</option>
-          <option value="high"${task.importance==='high'?' selected':''}>High</option>
-          <option value="critical"${task.importance==='critical'?' selected':''}>Critical</option>
-        </select>
-        <div class="form-row"><label>Duration (min)</label><input type="number" id="editDur_${task.id}" value="${task.duration}" min="1" max="480" /></div>
-        <div class="form-row"><label>Start time</label><input type="time" id="editTime_${task.id}" value="${task.startTime||''}" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:'DM Sans',sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;" /></div>
-        <div class="edit-actions">
-          <button class="btn" style="font-size:12px;padding:6px 10px;" onclick="saveEditTask('${task.id}')">Save</button>
-          <button class="btn secondary" style="font-size:12px;padding:6px 10px;" onclick="toggleEditTask('${task.id}')">Cancel</button>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-  tasks.forEach(t => { if (t.running && !timers[t.id]) startTimer(t.id); });
-}
+/* ── MOBILE: hide sidebar white panels, true fullscreen ── */
+@media (max-width: 900px) {
+  /* Remove any stray white background showing through */
+  .app-body { background: var(--bg); }
+  .panel.right { display: none; }
+  .panel.right.hidden-mobile { display: none !important; }
+  /* Show calendar panel only when explicitly shown */
+  .panel.right.shown-mobile { display: block !important; }
 
-// ── EVENTS ──
-function toggleEventForm() { document.getElementById('eventForm').classList.toggle('open'); }
-
-function scheduleTypeChange() {
-  const type = document.getElementById('evScheduleType').value;
-  document.getElementById('evDateWrap').style.display   = type==='once'   ? '' : 'none';
-  document.getElementById('evCustomDays').style.display = type==='custom' ? '' : 'none';
-}
-
-function addEvent() {
-  const name = document.getElementById('evName').value.trim(); if (!name) return;
-  const schedType = document.getElementById('evScheduleType').value;
-  let schedDays = [];
-  if (schedType==='once') { if (!document.getElementById('evDate').value) return alert('Pick a date.'); }
-  else if (schedType==='weekdays') schedDays=[1,2,3,4,5];
-  else if (schedType==='daily')    schedDays=[0,1,2,3,4,5,6];
-  else { document.querySelectorAll('#evCustomDays input:checked').forEach(c=>schedDays.push(parseInt(c.value))); if(!schedDays.length) return alert('Select at least one day.'); }
-  events.push({ id:uid(), name, importance:document.getElementById('evImp').value,
-    duration:parseInt(document.getElementById('evDur').value)||60,
-    time:document.getElementById('evTime').value||'', scheduleType:schedType,
-    date:schedType==='once'?document.getElementById('evDate').value:'', schedDays,
-    recurring:document.getElementById('evRecurring').checked,
-    recurWeeks:parseInt(document.getElementById('evRecurWeeks').value)||1 });
-  save(); document.getElementById('evName').value='';
-  toggleEventForm(); renderEventList(); renderCalendar(); renderTimeline();
-}
-
-function deleteEvent(id) { events=events.filter(e=>e.id!==id); save(); renderEventList(); renderCalendar(); renderTimeline(); }
-
-function toggleEventDone(id) {
-  const ev = events.find(e => e.id === id); if (!ev) return;
-  ev.done = !ev.done; save(); renderEventList(); renderCalendar();
-}
-
-function toggleEditEvent(id) {
-  const form = document.getElementById('evedit_'+id); if (!form) return;
-  form.classList.toggle('open');
-  if (form.classList.contains('open')) { const inp=document.getElementById('evEditName_'+id); if(inp){inp.focus();inp.select();} }
-}
-
-function saveEditEvent(id) {
-  const ev=events.find(e=>e.id===id); if(!ev) return;
-  const n=document.getElementById('evEditName_'+id); if(n&&n.value.trim()) ev.name=n.value.trim();
-  const i=document.getElementById('evEditImp_'+id);  if(i) ev.importance=i.value;
-  const d=document.getElementById('evEditDur_'+id);  if(d) ev.duration=parseInt(d.value)||ev.duration;
-  const t=document.getElementById('evEditTime_'+id); if(t) ev.time=t.value;
-  save(); renderEventList(); renderCalendar(); renderTimeline();
-}
-
-function renderEventList() {
-  const list = document.getElementById('eventList');
-  if (!events.length) { list.innerHTML='<div class="empty-state">No events yet.</div>'; return; }
-  list.innerHTML = events.map(ev => {
-    let sl='';
-    if(ev.scheduleType==='once') sl=ev.date;
-    else if(ev.scheduleType==='weekdays') sl='Mon–Fri';
-    else if(ev.scheduleType==='daily')    sl='Every day';
-    else sl=(ev.schedDays||[]).map(d=>DAYS[d]).join(', ');
-    if(ev.recurring&&ev.scheduleType!=='once') sl+=` · every ${ev.recurWeeks}w`;
-    return `<div class="event-card" id="evcard_${ev.id}">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
-        <button class="done-btn${ev.done?' done-active':''}" onclick="toggleEventDone('${ev.id}')" title="${ev.done?'Mark incomplete':'Mark complete'}">${ev.done?'✓':'○'}</button>
-        <div class="ev-name${ev.done?' done-name':''}" style="margin:0;">${escHtml(ev.name)}</div>
-      </div>
-      <div class="ev-meta">${sl}${ev.time?' · '+ev.time:''} · ${ev.duration} min · <span class="${impClass(ev.importance)}" style="font-size:10px;padding:1px 5px;border-radius:8px;font-weight:600;">${impLabel(ev.importance)}</span></div>
-      <div class="ev-actions">
-        <button class="icon-btn" onclick="toggleEditEvent('${ev.id}')">✏ Edit</button>
-        <button class="icon-btn del-btn" onclick="deleteEvent('${ev.id}')">✕ Remove</button>
-      </div>
-      <div class="ev-edit-form" id="evedit_${ev.id}">
-        <input type="text" id="evEditName_${ev.id}" value="${escHtml(ev.name)}" placeholder="Event name" />
-        <select id="evEditImp_${ev.id}">
-          <option value="low"${ev.importance==='low'?' selected':''}>Low</option>
-          <option value="medium"${ev.importance==='medium'?' selected':''}>Medium</option>
-          <option value="high"${ev.importance==='high'?' selected':''}>High</option>
-          <option value="critical"${ev.importance==='critical'?' selected':''}>Critical</option>
-        </select>
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
-          <label style="font-size:11px;color:var(--text2);white-space:nowrap;">Duration (min)</label>
-          <input type="number" id="evEditDur_${ev.id}" value="${ev.duration}" min="1" max="480" style="width:70px;" />
-          <label style="font-size:11px;color:var(--text2);">Time</label>
-          <input type="time" id="evEditTime_${ev.id}" value="${ev.time||''}" style="flex:1;" />
-        </div>
-        <div style="display:flex;gap:6px;">
-          <button class="btn" style="font-size:12px;padding:5px 10px;" onclick="saveEditEvent('${ev.id}')">Save</button>
-          <button class="btn secondary" style="font-size:12px;padding:5px 10px;" onclick="toggleEditEvent('${ev.id}')">Cancel</button>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function eventOccursOn(ev, date) {
-  if (ev.scheduleType==='once') return ev.date===toDateStr(date);
-  const dow=date.getDay();
-  if (ev.scheduleType==='weekdays') return dow>=1&&dow<=5;
-  if (ev.scheduleType==='daily')    return true;
-  if (ev.scheduleType==='custom')   return (ev.schedDays||[]).includes(dow);
-  return false;
-}
-
-// ── DEADLINES ──
-function saveDeadlines() { save(); }
-
-function addDeadline() {
-  const name=document.getElementById('newDlName').value.trim();
-  const date=document.getElementById('newDlDate').value;
-  if (!name||!date) return;
-  deadlines.push({ id:uid(), name, importance:document.getElementById('newDlImp').value, date });
-  saveDeadlines(); document.getElementById('newDlName').value=''; renderDeadlines();
-}
-
-function deleteDeadline(id) { deadlines=deadlines.filter(d=>d.id!==id); saveDeadlines(); renderDeadlines(); }
-
-function toggleEditDeadline(id) { document.getElementById('dledit_'+id)?.classList.toggle('open'); }
-
-function saveEditDeadline(id) {
-  const dl=deadlines.find(d=>d.id===id); if(!dl) return;
-  const n=document.getElementById('dlEditName_'+id); if(n&&n.value.trim()) dl.name=n.value.trim();
-  const i=document.getElementById('dlEditImp_'+id);  if(i) dl.importance=i.value;
-  const d=document.getElementById('dlEditDate_'+id); if(d&&d.value) dl.date=d.value;
-  saveDeadlines(); renderDeadlines();
-}
-
-function deadlineCountdown(dateStr) {
-  const today=new Date(); today.setHours(0,0,0,0);
-  const due=new Date(dateStr+'T00:00:00');
-  const diff=Math.round((due-today)/86400000);
-  if(diff<0)   return {label:`${Math.abs(diff)}d overdue`,cls:'dl-overdue',  dotCls:'dl-dot-overdue', cmCls:'cm-dl-overdue'};
-  if(diff===0) return {label:'Due today!',               cls:'dl-today',    dotCls:'dl-dot-today',   cmCls:'cm-dl-today'};
-  if(diff<=3)  return {label:`Due in ${diff}d`,          cls:'dl-soon',     dotCls:'dl-dot-soon',    cmCls:'cm-dl-soon'};
-  return             {label:`Due in ${diff}d`,            cls:'dl-upcoming', dotCls:'dl-dot-upcoming',cmCls:'cm-dl-upcoming'};
-}
-
-function renderDeadlines() {
-  const list=document.getElementById('deadlineList'); if(!list) return;
-  if(!deadlines.length) { list.innerHTML='<div class="empty-state">No deadlines yet.</div>'; return; }
-  const sorted=[...deadlines].sort((a,b)=>a.date.localeCompare(b.date));
-  list.innerHTML=sorted.map(dl=>{
-    const cd=deadlineCountdown(dl.date);
-    return `<div class="deadline-card" id="dlcard_${dl.id}">
-      <div class="deadline-header">
-        <button class="done-btn${dl.done?' done-active':''}" onclick="toggleDeadlineDone('${dl.id}')" title="${dl.done?'Mark incomplete':'Mark complete'}">${dl.done?'✓':'○'}</button>
-        <div class="deadline-name${dl.done?' done-name':''}">${escHtml(dl.name)}</div>
-        <span class="importance-badge ${impClass(dl.importance)}">${impLabel(dl.importance)}</span>
-      </div>
-      <div class="deadline-meta"><span>📅 ${dl.date}</span><span class="deadline-countdown ${cd.cls}">${cd.label}</span></div>
-      <div class="deadline-actions">
-        <button class="icon-btn" onclick="toggleEditDeadline('${dl.id}')">✏ Edit</button>
-        <button class="icon-btn del-btn" onclick="deleteDeadline('${dl.id}')">✕</button>
-      </div>
-      <div class="deadline-edit-form" id="dledit_${dl.id}">
-        <input type="text" id="dlEditName_${dl.id}" value="${escHtml(dl.name)}" placeholder="Deadline name" />
-        <select id="dlEditImp_${dl.id}">
-          <option value="low"${dl.importance==='low'?' selected':''}>Low</option>
-          <option value="medium"${dl.importance==='medium'?' selected':''}>Medium</option>
-          <option value="high"${dl.importance==='high'?' selected':''}>High</option>
-          <option value="critical"${dl.importance==='critical'?' selected':''}>Critical</option>
-        </select>
-        <input type="date" id="dlEditDate_${dl.id}" value="${dl.date}" />
-        <div style="display:flex;gap:6px;">
-          <button class="btn" style="font-size:12px;padding:5px 10px;" onclick="saveEditDeadline('${dl.id}')">Save</button>
-          <button class="btn secondary" style="font-size:12px;padding:5px 10px;" onclick="toggleEditDeadline('${dl.id}')">Cancel</button>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-// ── CALENDAR ──
-function renderCalendar() {
-  document.getElementById('calMonthLabel').textContent = MONTHS[calDate.getMonth()]+' '+calDate.getFullYear();
-  const grid=document.getElementById('calGrid');
-  const today=new Date();
-  const firstDay=new Date(calDate.getFullYear(),calDate.getMonth(),1);
-  const lastDay =new Date(calDate.getFullYear(),calDate.getMonth()+1,0);
-  let html=DAYS.map(d=>`<div class="cal-dow">${d[0]}</div>`).join('');
-  const startPad=firstDay.getDay();
-  const prevMonth=new Date(calDate.getFullYear(),calDate.getMonth(),0);
-  for(let i=startPad-1;i>=0;i--) html+=calDayHtml(new Date(prevMonth.getFullYear(),prevMonth.getMonth(),prevMonth.getDate()-i),true,today);
-  for(let day=1;day<=lastDay.getDate();day++) html+=calDayHtml(new Date(calDate.getFullYear(),calDate.getMonth(),day),false,today);
-  const endPad=6-lastDay.getDay();
-  for(let i=1;i<=endPad;i++) html+=calDayHtml(new Date(calDate.getFullYear(),calDate.getMonth()+1,i),true,today);
-  grid.innerHTML=html;
-  renderDayDetail();
-}
-
-function calDayHtml(d,otherMonth,today) {
-  const isToday=toDateStr(d)===toDateStr(today);
-  const isSelected=selectedDay&&toDateStr(d)===toDateStr(selectedDay);
-  const ds=toDateStr(d);
-  const evCount=events.filter(ev=>eventOccursOn(ev,d)).length;
-  const dlCount=deadlines.filter(dl=>dl.date===ds).length;
-  let dots='';
-  if(evCount>0) dots+=`<div class="day-dot event-dot"></div>`.repeat(Math.min(evCount,3));
-  if(dlCount>0) dots+=`<div class="day-dot" style="background:#E74C3C;"></div>`.repeat(Math.min(dlCount,2));
-  let cls='cal-day';
-  if(otherMonth) cls+=' other-month';
-  if(isToday)    cls+=' today';
-  if(isSelected) cls+=' selected';
-  return `<div class="${cls}" onclick="selectDay('${ds}')"><span class="day-num">${d.getDate()}</span><div class="day-dots">${dots}</div></div>`;
-}
-
-function selectDay(ds) { selectedDay=new Date(ds+'T12:00:00'); renderCalendar(); renderDayDetail(); }
-
-function renderDayDetail() {
-  if(!selectedDay) { document.getElementById('dayDetail').style.display='none'; return; }
-  document.getElementById('dayDetail').style.display='';
-  document.getElementById('dayDetailTitle').textContent=DAYS[selectedDay.getDay()]+', '+MONTHS[selectedDay.getMonth()]+' '+selectedDay.getDate();
-  const evOnDay=events.filter(ev=>eventOccursOn(ev,selectedDay));
-  const tasksOnDay=tasks.filter(t=>t.startTime);
-  const dlOnDay=deadlines.filter(dl=>dl.date===toDateStr(selectedDay));
-  let html='';
-  if(!tasksOnDay.length&&!evOnDay.length&&!dlOnDay.length) html='<div style="font-size:12px;color:var(--text3);font-style:italic;">Nothing scheduled.</div>';
-  tasksOnDay.sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')).forEach(t=>{
-    html+=`<div class="day-item"><div class="day-item-dot"></div><div><div class="day-item-name">${escHtml(t.name)}</div><div class="day-item-sub">${t.startTime} · ${t.duration} min · ${impLabel(t.importance)}</div></div></div>`;
-  });
-  evOnDay.sort((a,b)=>(a.time||'').localeCompare(b.time||'')).forEach(ev=>{
-    html+=`<div class="day-item"><div class="day-item-dot ev"></div><div><div class="day-item-name">${escHtml(ev.name)}</div><div class="day-item-sub">${ev.time?ev.time+' · ':''}${ev.duration} min · ${impLabel(ev.importance)}</div></div></div>`;
-  });
-  dlOnDay.forEach(dl=>{
-    html+=`<div class="day-item"><div class="day-item-dot" style="background:#E74C3C;"></div><div><div class="day-item-name">📅 ${escHtml(dl.name)}</div><div class="day-item-sub">Deadline · ${impLabel(dl.importance)}</div></div></div>`;
-  });
-  document.getElementById('dayDetailItems').innerHTML=html;
-}
-
-function calPrev() { calDate=new Date(calDate.getFullYear(),calDate.getMonth()-1,1); renderCalendar(); }
-function calNext() { calDate=new Date(calDate.getFullYear(),calDate.getMonth()+1,1); renderCalendar(); }
-
-// ── TIMELINE ──
-function renderTimeline() {
-  const today=new Date(), tlDiv=document.getElementById('timelineView'), items=[];
-  tasks.forEach(t=>{ if(t.startTime){const[h,m]=t.startTime.split(':').map(Number); items.push({type:'task',hour:h,min:m,name:t.name,duration:t.duration,importance:t.importance}); }});
-  events.forEach(ev=>{ if(eventOccursOn(ev,today)&&ev.time){const[h,m]=ev.time.split(':').map(Number); items.push({type:'event',hour:h,min:m,name:ev.name,duration:ev.duration,importance:ev.importance}); }});
-  if(!items.length){tlDiv.innerHTML='<div class="empty-state">No scheduled items for today.</div>';return;}
-  items.sort((a,b)=>a.hour*60+a.min-(b.hour*60+b.min));
-  const minH=Math.max(0,items[0].hour-1), maxH=Math.min(23,items[items.length-1].hour+2);
-  let html='';
-  for(let h=minH;h<=maxH;h++){
-    const label=h===0?'12 AM':h<12?h+' AM':h===12?'12 PM':(h-12)+' PM';
-    const blocks=items.filter(i=>i.hour===h).map(i=>`<div class="timeline-block${i.type==='event'?' event-block':''}"><div class="tl-name">${escHtml(i.name)}</div><div class="tl-meta">${String(i.hour).padStart(2,'0')}:${String(i.min).padStart(2,'0')} · ${i.duration} min · <span class="${impClass(i.importance)}" style="font-size:10px;padding:1px 5px;border-radius:8px;font-weight:600;">${impLabel(i.importance)}</span></div></div>`).join('');
-    html+=`<div class="timeline-hour"><div class="timeline-label">${label}</div>${blocks}</div>`;
-  }
-  tlDiv.innerHTML=html;
-}
-
-function switchMain(view) {
-  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
-  event.target.classList.add('active');
-  document.getElementById('mainTasks').style.display    = view==='tasks'    ? '' : 'none';
-  document.getElementById('mainTimeline').style.display = view==='timeline' ? '' : 'none';
-  if(view==='timeline') renderTimeline();
-}
-
-// ── WEATHER ──
-let weatherCache=null, weatherLastFetch=0;
-const WMO_CODES={0:'Clear sky',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Foggy',48:'Icy fog',51:'Light drizzle',53:'Drizzle',55:'Heavy drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',71:'Light snow',73:'Snow',75:'Heavy snow',77:'Snow grains',80:'Light showers',81:'Showers',82:'Heavy showers',85:'Snow showers',86:'Heavy snow showers',95:'Thunderstorm',96:'Thunderstorm + hail',99:'Heavy thunderstorm + hail'};
-const WMO_ICONS={0:'☀️',1:'🌤️',2:'⛅',3:'☁️',45:'🌫️',48:'🌫️',51:'🌦️',53:'🌦️',55:'🌧️',61:'🌧️',63:'🌧️',65:'🌧️',71:'🌨️',73:'❄️',75:'❄️',77:'❄️',80:'🌦️',81:'🌧️',82:'⛈️',85:'🌨️',86:'🌨️',95:'⛈️',96:'⛈️',99:'⛈️'};
-
-async function fetchWeather() {
-  if(weatherCache&&Date.now()-weatherLastFetch<600000){renderWeather(weatherCache);return;}
-  try {
-    const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:6000}));
-    const{latitude:lat,longitude:lon}=pos.coords;
-    let cityName='';
-    try{const gr=await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`);const gd=await gr.json();cityName=gd.address?.city||gd.address?.town||gd.address?.suburb||gd.address?.county||'';}catch(e){}
-    const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code,precipitation&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_sum,wind_speed_10m_max&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto&forecast_days=2`;
-    const res=await fetch(url); const data=await res.json(); const c=data.current; const d=data.daily;
-    const tm=d?{temperature_2m_max:d.temperature_2m_max[1],temperature_2m_min:d.temperature_2m_min[1],weather_code:d.weather_code[1],precipitation_sum:d.precipitation_sum[1],wind_speed_10m_max:d.wind_speed_10m_max[1]}:null;
-    weatherCache={c,tm,cityName,lat,lon}; weatherLastFetch=Date.now(); renderWeather(weatherCache);
-  } catch(e) { const el=document.getElementById('cmWeatherToday'); if(el) el.innerHTML='<div class="cm-weather-loading">Weather unavailable — enable location</div>'; }
-}
-
-function renderWeather(cache) {
-  if(!cache) return;
-  const{c,tm,cityName}=cache;
-  function card(label,temp,sub,subLabel,humidity,humLabel,wind,windLabel,precip,code,loc) {
-    const icon=WMO_ICONS[code]||'🌡️'; const desc=WMO_CODES[code]||'Unknown';
-    return `<div class="cm-weather-day-label">${label}</div>
-      <div class="cm-weather-main"><div class="cm-weather-icon">${icon}</div><div><div class="cm-weather-temp">${Math.round(temp)}°F</div><div class="cm-weather-desc">${desc}</div></div></div>
-      <div class="cm-weather-stats">
-        <div class="cm-weather-stat"><div class="cm-weather-stat-val">${Math.round(sub)}°F</div><div class="cm-weather-stat-lbl">${subLabel}</div></div>
-        <div class="cm-weather-stat"><div class="cm-weather-stat-val">${Math.round(humidity)}${humLabel.includes('%')?'%':''}</div><div class="cm-weather-stat-lbl">${humLabel}</div></div>
-        <div class="cm-weather-stat"><div class="cm-weather-stat-val">${Math.round(wind)} mph</div><div class="cm-weather-stat-lbl">${windLabel}</div></div>
-        <div class="cm-weather-stat"><div class="cm-weather-stat-val">${Number(precip).toFixed(2)}"</div><div class="cm-weather-stat-lbl">Precip</div></div>
-      </div>${loc?`<div class="cm-weather-loc">📍 ${loc}</div>`:''}`;
-  }
-  const te=document.getElementById('cmWeatherToday'),me=document.getElementById('cmWeatherTomorrow');
-  if(te&&c) te.innerHTML=card('Today',c.temperature_2m,c.apparent_temperature,'Feels like',c.relative_humidity_2m,'Humidity%',c.wind_speed_10m,'Wind',c.precipitation||0,c.weather_code,cityName);
-  if(me&&tm) me.innerHTML=card('Tomorrow',tm.temperature_2m_max,tm.temperature_2m_min,'Low',tm.wind_speed_10m_max,'Max wind',tm.wind_speed_10m_max,'Wind',tm.precipitation_sum||0,tm.weather_code,'');
-}
-
-// ── SOUNDS ──
-function playTaskEndSound() {
-  try {
-    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    if(audioCtx.state==='suspended') audioCtx.resume();
-    const now=audioCtx.currentTime;
-    [523.25,659.25,783.99].forEach((freq,i)=>{
-      const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
-      osc.connect(gain);gain.connect(audioCtx.destination);osc.type='sine';osc.frequency.value=freq;
-      gain.gain.setValueAtTime(0,now+i*0.18);gain.gain.linearRampToValueAtTime(0.35,now+i*0.18+0.04);gain.gain.exponentialRampToValueAtTime(0.001,now+i*0.18+0.5);
-      osc.start(now+i*0.18);osc.stop(now+i*0.18+0.55);
-    });
-  } catch(e){}
-}
-
-function playDeadlineWarningSound(criticality) {
-  try {
-    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    if(audioCtx.state==='suspended') audioCtx.resume();
-    const now=audioCtx.currentTime;
-    const configs={critical:{freqs:[880,880,1100],interval:0.22,gain:0.5},high:{freqs:[660,880],interval:0.3,gain:0.4},medium:{freqs:[523,659],interval:0.4,gain:0.3},low:{freqs:[440,523],interval:0.5,gain:0.25}};
-    const cfg=configs[criticality]||configs.medium;
-    cfg.freqs.forEach((freq,i)=>{
-      const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
-      osc.connect(gain);gain.connect(audioCtx.destination);osc.type=criticality==='critical'?'square':'sine';osc.frequency.value=freq;
-      const start=now+i*cfg.interval;gain.gain.setValueAtTime(cfg.gain,start);gain.gain.exponentialRampToValueAtTime(0.001,start+0.35);osc.start(start);osc.stop(start+0.4);
-    });
-  } catch(e){}
-}
-
-// ── DEADLINE WARNINGS ──
-let deadlineWarnedKeys=new Set(JSON.parse(sessionStorage.getItem('dp_dlwarned')||'[]'));
-
-function checkDeadlineWarnings(now) {
-  const today=new Date();today.setHours(0,0,0,0);
-  deadlines.forEach(dl=>{
-    const due=new Date(dl.date+'T00:00:00');
-    const daysUntil=Math.round((due-today)/86400000);
-    const threshold={critical:0,high:1,medium:0,low:0}[dl.importance]??0;
-    if(daysUntil!==threshold) return;
-    const warnKey=`${dl.id}_${dl.date}`;
-    if(deadlineWarnedKeys.has(warnKey)) return;
-    if(now.getHours()===9&&now.getMinutes()<5){
-      deadlineWarnedKeys.add(warnKey);
-      sessionStorage.setItem('dp_dlwarned',JSON.stringify([...deadlineWarnedKeys]));
-      playDeadlineWarningSound(dl.importance);
-    }
-  });
-}
-
-// ── ALARMS ──
-let alarms=JSON.parse(localStorage.getItem('dp_alarms')||'[]');
-let firingAlarm=null, alarmAudio=null;
-
-function saveAlarms() { localStorage.setItem('dp_alarms',JSON.stringify(alarms)); }
-
-function addAlarm() {
-  const timeVal=document.getElementById('newAlarmTime').value; if(!timeVal) return;
-  const label=document.getElementById('newAlarmLabel').value.trim()||'Alarm';
-  alarms.push({id:uid(),time:timeVal,label,on:true,fired:false});
-  saveAlarms();renderAlarms();document.getElementById('newAlarmLabel').value='';
-}
-function deleteAlarm(id) { alarms=alarms.filter(a=>a.id!==id); saveAlarms(); renderAlarms(); }
-function toggleAlarm(id) { const a=alarms.find(a=>a.id===id);if(a){a.on=!a.on;saveAlarms();renderAlarms();} }
-
-function renderAlarms() {
-  const list=document.getElementById('alarmList');if(!list)return;
-  if(!alarms.length){list.innerHTML='<div style="color:rgba(255,255,255,0.25);font-size:12px;font-style:italic;">No alarms set.</div>';return;}
-  list.innerHTML=alarms.map(a=>`
-    <div class="cm-alarm-item" id="alarmitem_${a.id}">
-      <button class="cm-alarm-toggle ${a.on?'on':''}" onclick="toggleAlarm('${a.id}')"></button>
-      <div class="cm-alarm-info"><div class="cm-alarm-time-display">${a.time}</div><div class="cm-alarm-label-display">${escHtml(a.label)}</div></div>
-      <button class="cm-alarm-del" onclick="deleteAlarm('${a.id}')">✕</button>
-    </div>`).join('');
-}
-
-function checkAlarms(now) {
-  if(firingAlarm) return;
-  const pad=n=>String(n).padStart(2,'0');
-  const cur=`${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  alarms.forEach(a=>{if(a.on&&a.time===cur&&!a.fired){a.fired=true;saveAlarms();fireAlarm(a);}});
-  if(now.getSeconds()===58){alarms.forEach(a=>{if(a.fired&&a.time!==cur)a.fired=false;});saveAlarms();}
-}
-
-function fireAlarm(alarm) {
-  firingAlarm=alarm;
-  document.getElementById('alarmRingTime').textContent=alarm.time;
-  document.getElementById('alarmRingLabel').textContent=alarm.label;
-  document.getElementById('alarmRingOverlay').classList.add('ringing');
-  playAlarmSound();
-}
-
-function playAlarmSound() {
-  try {
-    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    if(audioCtx.state==='suspended') audioCtx.resume();
-    const now=audioCtx.currentTime;
-    // Master gain for volume boost
-    const master=audioCtx.createGain();
-    master.gain.value=1.0;
-    master.connect(audioCtx.destination);
-    // Compressor to prevent clipping
-    const comp=audioCtx.createDynamicsCompressor();
-    comp.threshold.value=-6; comp.knee.value=3;
-    comp.ratio.value=4; comp.attack.value=0.001; comp.release.value=0.1;
-    comp.connect(master);
-    const beep=(freq,type,start,dur,vol)=>{
-      const osc=audioCtx.createOscillator(),g=audioCtx.createGain();
-      osc.connect(g);g.connect(comp);osc.frequency.value=freq;osc.type=type||'sawtooth';
-      g.gain.setValueAtTime(vol||0.8,now+start);
-      g.gain.exponentialRampToValueAtTime(0.001,now+start+dur);
-      osc.start(now+start);osc.stop(now+start+dur+0.05);
-    };
-    // Loud repeating pattern: high-low-high pairs x8
-    for(let i=0;i<8;i++){
-      beep(1047,  'sawtooth', i*0.55,      0.18, 0.9);
-      beep(1319,  'square',   i*0.55+0.2,  0.12, 0.7);
-    }
-    // Repeat every 4.5s while alarm is firing
-    alarmAudio=setTimeout(playAlarmSound,4500);
-  } catch(e){}
-}
-
-function dismissAlarm() { firingAlarm=null;clearTimeout(alarmAudio);document.getElementById('alarmRingOverlay').classList.remove('ringing');renderAlarms(); }
-function snoozeAlarm() {
-  if(!firingAlarm) return;
-  const now=new Date();now.setMinutes(now.getMinutes()+5);
-  const pad=n=>String(n).padStart(2,'0');
-  firingAlarm.time=`${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  firingAlarm.fired=false;saveAlarms();dismissAlarm();
-}
-
-// ── CLOCK MODE ──
-let clockModeOpen=false,clockModeInterval=null,clockModeInterval2=null;
-
-function openClockMode() {
-  clockModeOpen=true;
-  document.getElementById('clockOverlay').classList.add('open');
-  renderAlarms();
-  fetchWeather(); // fetch weather first so it populates the cards
-  updateClockMode(); // then render everything
-  clockModeInterval=setInterval(updateClockMode,1000);
-  clockModeInterval2=setInterval(fetchWeather,600000);
-}
-
-function closeClockMode() {
-  clockModeOpen=false;
-  document.getElementById('clockOverlay').classList.remove('open');
-  clearInterval(clockModeInterval);clearInterval(clockModeInterval2);
-}
-
-function switchCmTab(tab) {
-  // tabs removed in new layout — no-op kept for compatibility
-}
-
-function updateClockMode() {
-  const now=new Date();
-  const h=now.getHours(),m=now.getMinutes(),s=now.getSeconds();
-  const ampm=h>=12?'PM':'AM',h12=h%12||12;
-  const pad=n=>String(n).padStart(2,'0');
-  const cmTimeEl=document.getElementById('cmTime');
-  if(cmTimeEl){
-    // Find the text node (not the ampm span) and update it
-    for(const node of cmTimeEl.childNodes){
-      if(node.nodeType===3){ node.textContent=`${pad(h12)}:${pad(m)}:${pad(s)}`; break; }
-    }
-  }
-  document.getElementById('cmAmpm').textContent=ampm;
-  document.getElementById('cmDate').textContent=DAYS[now.getDay()]+', '+MONTHS[now.getMonth()]+' '+now.getDate()+', '+now.getFullYear();
-  const nowMins=h*60+m;
-
-  // ── Deadline pills under clock ──
-  const dlStrip=document.getElementById('cmDeadlineStrip');
-  if(dlStrip){
-    const today=new Date();today.setHours(0,0,0,0);
-    const sorted=[...deadlines].sort((a,b)=>a.date.localeCompare(b.date));
-    if(!sorted.length){
-      dlStrip.innerHTML='<span class="cm-dl-pill cm-dl-pill-empty">No deadlines</span>';
-    } else {
-      dlStrip.innerHTML=sorted.map(dl=>{
-        const due=new Date(dl.date+'T00:00:00');
-        const diff=Math.round((due-today)/86400000);
-        let pillCls,label;
-        if(diff<0)      { pillCls='cm-dl-pill-overdue'; label=escHtml(dl.name)+' · '+Math.abs(diff)+'d overdue'; }
-        else if(diff===0){ pillCls='cm-dl-pill-today';   label=escHtml(dl.name)+' · today'; }
-        else if(diff<=3) { pillCls='cm-dl-pill-soon';    label=escHtml(dl.name)+' · '+diff+'d'; }
-        else             { pillCls='cm-dl-pill-upcoming'; label=escHtml(dl.name)+' · '+diff+'d'; }
-        return '<span class="cm-dl-pill '+pillCls+'">'+label+'</span>';
-      }).join('');
-    }
+  /* Full viewport height for panels */
+  .panel, .main-area {
+    min-height: calc(100dvh - 120px);
   }
 
-  // ── Weather refresh from cache ──
-  if(weatherCache) renderWeather(weatherCache);
+  /* Hide desktop-only elements */
+  .terminal-toggle, .terminal-panel { display: none !important; }
 
-  // ── Upcoming panel (right column) ──
-  const upEl=document.getElementById('cmUpcomingPanel');
-  if(upEl){
-    const rows=[];
-    // Running tasks first
-    tasks.filter(t=>t.running).forEach(t=>{
-      const total=t.duration*60,elapsed=t.elapsed||0,pct=Math.min(elapsed/total,1),remaining=Math.max(total-elapsed,0);
-      const tc=pct>0.85?'danger':pct>0.65?'warn':'';
-      const bc=pct>0.85?'#E74C3C':pct>0.65?'#E67E22':pct>0.4?'#F1C40F':'#52e89e';
-      rows.push({sort:-1,html:`<div class="cm-up-item cm-up-active">
-        <div class="cm-up-dot active"></div>
-        <div class="cm-up-info"><div class="cm-up-name">${escHtml(t.name)}</div><div class="cm-up-sub">${t.duration}m · ${impLabel(t.importance)}</div>
-        <div class="cm-timer-bar" style="margin-top:4px;"><div class="cm-timer-fill" style="width:${pct*100}%;background:${bc};"></div></div></div>
-        <div class="cm-timer ${tc}" style="font-size:16px;">${fmtTime(remaining)}</div></div>`});
-    });
-    // Upcoming 90min tasks
-    tasks.forEach(t=>{
-      if(!t.startTime||t.running) return;
-      const[th,tm2]=t.startTime.split(':').map(Number);
-      const diff=th*60+tm2-nowMins;
-      if(diff>=0&&diff<=90) rows.push({sort:diff,html:`<div class="cm-up-item"><div class="cm-up-dot"></div><div class="cm-up-info"><div class="cm-up-name">${escHtml(t.name)}</div><div class="cm-up-sub">Task · ${t.duration}m · ${impLabel(t.importance)}</div></div><div class="cm-up-time">${diff===0?'Now':'in '+diff+'m'}</div></div>`});
-    });
-    // Upcoming 90min events
-    events.forEach(ev=>{
-      if(!ev.time||!eventOccursOn(ev,now)) return;
-      const[eh,em]=ev.time.split(':').map(Number);
-      const diff=eh*60+em-nowMins;
-      if(diff>=0&&diff<=90) rows.push({sort:diff,html:`<div class="cm-up-item"><div class="cm-up-dot ev"></div><div class="cm-up-info"><div class="cm-up-name">${escHtml(ev.name)}</div><div class="cm-up-sub">Event · ${ev.duration}m · ${impLabel(ev.importance)}</div></div><div class="cm-up-time">${diff===0?'Now':'in '+diff+'m'}</div></div>`});
-    });
-    rows.sort((a,b)=>a.sort-b.sort);
-    upEl.innerHTML=rows.length?rows.map(r=>r.html).join(''):'<div class="cm-empty">Nothing in the next 90 min.</div>';
-  }
+  /* Topbar compact */
+  .topbar .date-badge { display: none; }
 }
 
-
-
-
-// ── WAKE LOCK ──
-let wakeLock=null,silentPingInterval=null,wakeLockHeartbeat=null,wakeLockEnabled=false;
-
-function playSilentPing() {
-  try {
-    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    if(audioCtx.state==='suspended') audioCtx.resume();
-    const buf=audioCtx.createBuffer(1,Math.max(1,audioCtx.sampleRate*0.05),audioCtx.sampleRate);
-    const src=audioCtx.createBufferSource();src.buffer=buf;
-    const gain=audioCtx.createGain();gain.gain.value=0.001;
-    src.connect(gain);gain.connect(audioCtx.destination);src.start();
-  } catch(e){}
+/* ── MOBILE NAV: always on top, proper safe area ── */
+.mobile-nav {
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1.5px solid var(--border);
 }
 
-async function requestWakeLock() {
-  if(!('wakeLock' in navigator)) return;
-  try {
-    if(wakeLock){try{await wakeLock.release();}catch(e){}wakeLock=null;}
-    wakeLock=await navigator.wakeLock.request('screen');
-    wakeLock.addEventListener('release',()=>{wakeLock=null;if(wakeLockEnabled&&document.visibilityState==='visible')setTimeout(requestWakeLock,500);});
-    updateWakeLockUI(true);
-  } catch(e){updateWakeLockUI(false);}
+/* ── FULLSCREEN PWA: remove any white gaps ── */
+@media (display-mode: standalone) {
+  body { background: var(--bg); }
+  .app { min-height: 100dvh; }
+  .clockbar { padding-top: max(8px, env(safe-area-inset-top)); }
 }
-
-function updateWakeLockUI(active) {
-  const btn=document.getElementById('wakeLockBtn'),lbl=document.getElementById('wlLabel');
-  if(!btn||!lbl) return;
-  btn.classList.toggle('active',active);lbl.textContent=active?'Awake':'Screen lock';
-}
-
-async function enableWakeLock() {
-  wakeLockEnabled=true;await requestWakeLock();
-  if(silentPingInterval) clearInterval(silentPingInterval);
-  silentPingInterval=setInterval(playSilentPing,20000);
-  if(wakeLockHeartbeat) clearInterval(wakeLockHeartbeat);
-  wakeLockHeartbeat=setInterval(async()=>{if(document.visibilityState==='visible'&&!wakeLock)await requestWakeLock();},10000);
-}
-
-document.addEventListener('visibilitychange',async()=>{if(document.visibilityState==='visible'&&wakeLockEnabled){await requestWakeLock();if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();}});
-window.addEventListener('focus',async()=>{if(wakeLockEnabled&&!wakeLock)await requestWakeLock();});
-window.addEventListener('pageshow',async()=>{if(wakeLockEnabled)await requestWakeLock();});
-document.addEventListener('click',function _fc(){
-  if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-  if(audioCtx.state==='suspended') audioCtx.resume().then(()=>enableWakeLock());
-  else enableWakeLock();
-  document.removeEventListener('click',_fc);
-},{once:true});
-
-// ── CLOCK TICK ──
-function tickClock() {
-  const now=new Date(),h=now.getHours(),m=now.getMinutes(),s=now.getSeconds();
-  const ampm=h>=12?'PM':'AM',h12=h%12||12;
-  const pad=n=>String(n).padStart(2,'0');
-  const ckEl=document.getElementById('clockTime');
-  if(ckEl){ for(const node of ckEl.childNodes){ if(node.nodeType===3){ node.textContent=`${pad(h12)}:${pad(m)}:${pad(s)}`; break; } } }
-  document.getElementById('clockAmpm').textContent=ampm;
-  document.getElementById('clockDate').textContent=DAYS[now.getDay()]+', '+MONTHS[now.getMonth()]+' '+now.getDate()+', '+now.getFullYear();
-  checkAutoStart(now);checkAlarms(now);checkDeadlineWarnings(now);
-}
-
-function checkAutoStart(now) {
-  const pad=n=>String(n).padStart(2,'0');
-  const cur=`${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  tasks.forEach(task=>{if(task.startTime&&task.startTime===cur&&!task.running&&(task.elapsed||0)===0)startTimer(task.id);});
-}
-
-// ── MOBILE NAV ──
-function mobileTab(tab) {
-  document.querySelectorAll('.mnav-btn').forEach(b=>b.classList.remove('active'));
-  const btn=document.getElementById('mnav-'+tab);if(btn)btn.classList.add('active');
-  if(window.innerWidth>900) return;
-  const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
-  // Hide all panels
-  [tp,ma].forEach(el=>{if(el)el.classList.add('hidden-mobile');});
-  if(cp){ cp.classList.remove('shown-mobile'); cp.style.display='none'; }
-  if(tab==='tasks'){
-    tp.classList.remove('hidden-mobile');
-    document.getElementById('mainTasks').style.display='';
-    document.getElementById('mainTimeline').style.display='none';
-  } else if(tab==='timeline'){
-    ma.classList.remove('hidden-mobile');
-    document.getElementById('mainTasks').style.display='none';
-    document.getElementById('mainTimeline').style.display='';
-    renderTimeline();
-  } else if(tab==='calendar'){
-    if(cp){ cp.style.display='block'; cp.classList.add('shown-mobile'); }
-  }
-}
-
-function handleResize() {
-  const isMobile=window.innerWidth<=900;
-  const mobileNav=document.getElementById('mobileNav');
-  if(isMobile){
-    mobileNav.style.display='block';
-    // Hide terminal on mobile always
-    const tp2=document.getElementById('termPanel'),tb=document.getElementById('termToggle');
-    if(tp2) tp2.style.display='none';
-    if(tb)  tb.style.display='none';
-    mobileTab('tasks');
-  } else {
-    mobileNav.style.display='none';
-    const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
-    [tp,ma].forEach(el=>{if(el){el.classList.remove('hidden-mobile');el.style.display='';}});
-    if(cp){ cp.classList.remove('shown-mobile'); cp.style.display=''; cp.classList.remove('hidden-mobile'); }
-  }
-}
-window.addEventListener('resize',handleResize);
-
-// ── EXPOSE TO WINDOW ──
-Object.assign(window,{
-  toggleTaskDone, toggleEventDone, toggleDeadlineDone,
-  addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
-  addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
-  addDeadline,deleteDeadline,toggleEditDeadline,saveEditDeadline,
-  selectDay,calPrev,calNext,switchMain,mobileTab,
-  openClockMode,closeClockMode,switchCmTab,fetchWeather,
-  addAlarm,deleteAlarm,toggleAlarm,dismissAlarm,snoozeAlarm
-});
-
-// ── INIT ──
-async function init() {
-  const today=new Date();
-  document.getElementById('todayLabel').textContent=DAYS[today.getDay()]+', '+MONTHS[today.getMonth()]+' '+today.getDate()+', '+today.getFullYear();
-  const pad=n=>String(n).padStart(2,'0');
-  document.getElementById('newTaskTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
-  document.getElementById('evTime').value=`${pad(today.getHours())}:${pad(today.getMinutes())}`;
-  document.getElementById('evDate').value=toDateStr(today);
-  selectedDay=today;
-  const cb=document.getElementById('clockModeBtnWire');
-  if(cb) cb.addEventListener('click',openClockMode);
-  await syncLoad();
-  renderTasks();renderEventList();renderCalendar();renderDeadlines();
-  tickClock();setInterval(tickClock,1000);handleResize();
-}
-
-init();
-})();
-
-// ═══════════════════════════════════════════════════
-// ── TERMINAL ──
-// ═══════════════════════════════════════════════════
-let termHistory = [], termHistIdx = -1, termOpen = false;
-
-function toggleTerminal() {
-  termOpen = !termOpen;
-  const panel = document.getElementById('termPanel');
-  panel.classList.toggle('open', termOpen);
-  if (termOpen) {
-    if (!document.getElementById('termOutput').children.length) termWelcome();
-    document.getElementById('termInput').focus();
-  }
-}
-
-function termWelcome() {
-  termPrint('head', '  Daily Planner Terminal  ');
-  termPrint('dim',  '  type help for commands  ');
-  termPrint('dim',  '──────────────────────────');
-}
-
-function termPrint(cls, text) {
-  const out = document.getElementById('termOutput');
-  const el = document.createElement('div');
-  el.className = 't-line t-' + cls;
-  el.textContent = text;
-  out.appendChild(el);
-  out.scrollTop = out.scrollHeight;
-}
-
-function termEcho(cmd, result) {
-  termPrint('prompt', 'planner> ' + cmd);
-  if (Array.isArray(result)) result.forEach(([c,t]) => termPrint(c,t));
-  else if (result) termPrint('out', result);
-}
-
-function termError(msg) { termPrint('err', '✕  ' + msg); }
-function termOk(msg)    { termPrint('ok',  '✓  ' + msg); }
-function termWarn(msg)  { termPrint('warn','⚠  ' + msg); }
-
-// ── PARSE HELPERS ──
-function parseArgs(str) {
-  // split on spaces but keep quoted strings together
-  const args = [];
-  let cur = '', inQ = false, q = '';
-  for (const ch of str) {
-    if ((ch === '"' || ch === "'") && !inQ) { inQ = true; q = ch; }
-    else if (ch === q && inQ)               { inQ = false; q = ''; }
-    else if (ch === ' ' && !inQ)            { if (cur) { args.push(cur); cur = ''; } }
-    else cur += ch;
-  }
-  if (cur) args.push(cur);
-  return args;
-}
-
-function parseTimeArg(str) {
-  // Accepts: 14:30, 2:30pm, 2pm, 14h30, 230pm
-  if (!str) return '';
-  str = str.toLowerCase().trim();
-  const ampm = str.includes('am') ? 'am' : str.includes('pm') ? 'pm' : null;
-  str = str.replace(/[ap]m/, '');
-  let h, m = 0;
-  if (str.includes(':')) { [h, m] = str.split(':').map(Number); }
-  else if (str.length <= 2) { h = parseInt(str); }
-  else { h = parseInt(str.slice(0, -2)); m = parseInt(str.slice(-2)); }
-  if (ampm === 'pm' && h < 12) h += 12;
-  if (ampm === 'am' && h === 12) h = 0;
-  return `${String(h).padStart(2,'0')}:${String(m||0).padStart(2,'0')}`;
-}
-
-function parseDateArg(str) {
-  // Accepts: today, tomorrow, mon, 2025-12-25, 25/12, dec25, 25dec
-  if (!str) return toDateStr(new Date());
-  str = str.toLowerCase().trim();
-  const now = new Date();
-  if (str === 'today')    return toDateStr(now);
-  if (str === 'tomorrow') { const d = new Date(now); d.setDate(d.getDate()+1); return toDateStr(d); }
-  const days = ['sun','mon','tue','wed','thu','fri','sat'];
-  const dayIdx = days.indexOf(str.slice(0,3));
-  if (dayIdx !== -1) {
-    const d = new Date(now); let diff = dayIdx - d.getDay();
-    if (diff <= 0) diff += 7;
-    d.setDate(d.getDate() + diff);
-    return toDateStr(d);
-  }
-  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-  // dec25 or 25dec
-  for (let i = 0; i < months.length; i++) {
-    const mo = months[i];
-    if (str.startsWith(mo)) { const day = parseInt(str.slice(3)); return `${now.getFullYear()}-${String(i+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`; }
-    if (str.endsWith(mo))   { const day = parseInt(str.slice(0,-3)); return `${now.getFullYear()}-${String(i+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`; }
-  }
-  if (str.includes('-')) return str; // already yyyy-mm-dd
-  if (str.includes('/')) { const [d,m] = str.split('/'); return `${now.getFullYear()}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`; }
-  return toDateStr(now);
-}
-
-function findTask(q)     { return tasks.find(t => t.id===q || t.name.toLowerCase().includes(q.toLowerCase())); }
-function findEvent(q)    { return events.find(e => e.id===q || e.name.toLowerCase().includes(q.toLowerCase())); }
-function findDeadline(q) { return deadlines.find(d => d.id===q || d.name.toLowerCase().includes(q.toLowerCase())); }
-function findAlarm(q)    { return alarms.find(a => a.id===q || a.label.toLowerCase().includes(q.toLowerCase()) || a.time===q); }
-
-// ── COMMAND ROUTER ──
-function termRun(raw) {
-  raw = raw.trim();
-  if (!raw) return;
-  termHistory.unshift(raw);
-  termHistIdx = -1;
-  const parts = parseArgs(raw);
-  const cmd = parts[0]?.toLowerCase();
-  const sub = parts[1]?.toLowerCase();
-  const rest = parts.slice(2);
-
-  try {
-    switch (cmd) {
-      case 'help': case '?': cmdHelp(sub); break;
-      case 'task': case 't': cmdTask(sub, rest); break;
-      case 'event': case 'ev': cmdEvent(sub, rest); break;
-      case 'deadline': case 'dl': cmdDeadline(sub, rest); break;
-      case 'alarm': case 'al': cmdAlarm(sub, rest); break;
-      case 'ls': case 'list': cmdList(sub); break;
-      case 'rm': case 'del': case 'delete': cmdDelete(sub, rest); break;
-      case 'edit': cmdEdit(sub, rest); break;
-      case 'start': cmdTimerCtl('start', sub); break;
-      case 'stop': case 'pause': cmdTimerCtl('stop', sub); break;
-      case 'reset': cmdTimerCtl('reset', sub); break;
-      case 'done': cmdTimerCtl('done', sub); break;
-      case 'clock': openClockMode(); termOk('Clock mode opened'); break;
-      case 'clear': case 'cls': document.getElementById('termOutput').innerHTML = ''; break;
-      case 'sync': syncLoad().then(()=>termOk('Synced with Firebase')).catch(()=>termError('Sync failed')); break;
-      default: termError(`Unknown command: ${cmd}. Type 'help' for commands.`);
-    }
-  } catch(e) { termError(e.message); }
-}
-
-// ── HELP ──
-function cmdHelp(topic) {
-  if (!topic) {
-    termPrint('head', 'Commands:');
-    const cmds = [
-      ['task add',      'Add a task'],
-      ['task ls',       'List tasks'],
-      ['task edit',     'Edit a task'],
-      ['task rm',       'Delete a task'],
-      ['event add',     'Add an event'],
-      ['event ls',      'List events'],
-      ['event edit',    'Edit an event'],
-      ['event rm',      'Delete an event'],
-      ['deadline add',  'Add a deadline'],
-      ['deadline ls',   'List deadlines'],
-      ['deadline edit', 'Edit a deadline'],
-      ['deadline rm',   'Delete a deadline'],
-      ['alarm add',     'Add an alarm'],
-      ['alarm ls',      'List alarms'],
-      ['alarm rm',      'Delete an alarm'],
-      ['start <name>',  'Start task timer'],
-      ['stop <name>',   'Pause task timer'],
-      ['reset <name>',  'Reset task timer'],
-      ['ls',            'List everything'],
-      ['clear',         'Clear terminal'],
-      ['sync',          'Force Firebase sync'],
-      ['clock',         'Open clock mode'],
-    ];
-    cmds.forEach(([c,d]) => termPrint('out', `  ${c.padEnd(20)} ${d}`));
-    termPrint('dim', "  Type 'help task' for task syntax");
-    return;
-  }
-  const helpText = {
-    task: [
-      ['head','task add <name> [options]'],
-      ['out', '  Options:'],
-      ['out', '  -p low|medium|high|critical   priority (default: medium)'],
-      ['out', '  -d <minutes>                  duration (default: 30)'],
-      ['out', '  -t <time>                     start time e.g. 14:30, 2pm'],
-      ['out', ''],
-      ['out', '  Examples:'],
-      ['out', "  task add 'Study chem' -p high -d 60 -t 3pm"],
-      ['out', "  task add Robotics -d 90 -t 14:30"],
-      ['out', ''],
-      ['head','task edit <name> [options]  (same options as add)'],
-      ['head','task rm <name>'],
-      ['head','task ls'],
-    ],
-    event: [
-      ['head','event add <name> [options]'],
-      ['out', '  Options:'],
-      ['out', '  -p low|medium|high|critical'],
-      ['out', '  -d <minutes>                  duration'],
-      ['out', '  -t <time>                     time'],
-      ['out', '  -s once|daily|weekdays|custom schedule'],
-      ['out', '  --date <date>                 for one-time events'],
-      ['out', ''],
-      ['out', '  Date formats: today, tomorrow, mon, dec25, 2025-12-25'],
-      ['out', "  event add 'Team meeting' -t 10am -d 60 -s weekdays"],
-      ['out', "  event add 'Dentist' -t 2pm --date tomorrow"],
-    ],
-    deadline: [
-      ['head','deadline add <name> [options]'],
-      ['out', '  Options:'],
-      ['out', '  -p low|medium|high|critical'],
-      ['out', '  --date <date>  (required)'],
-      ['out', ''],
-      ['out', "  deadline add 'Chem lab report' --date friday -p high"],
-      ['out', "  deadline add 'FLL submission' --date dec25"],
-    ],
-    alarm: [
-      ['head','alarm add <time> [label]'],
-      ['out', '  alarm add 7:30am Wake up'],
-      ['out', '  alarm add 14:00 Lunch'],
-      ['head','alarm rm <time or label>'],
-      ['head','alarm ls'],
-    ],
-  };
-  const lines = helpText[topic];
-  if (!lines) { termError(`No help for '${topic}'`); return; }
-  lines.forEach(([c,t]) => termPrint(c,t));
-}
-
-// ── TASK COMMANDS ──
-function cmdTask(sub, args) {
-  if (sub === 'add' || sub === 'a') {
-    const name = args.shift();
-    if (!name) { termError('Name required: task add <name>'); return; }
-    const opts = parseOpts(args);
-    const task = {
-      id: uid(), name,
-      importance: normalizeImp(opts['-p'] || opts['--priority'] || 'medium'),
-      duration: parseInt(opts['-d'] || opts['--duration'] || '30') || 30,
-      startTime: opts['-t'] || opts['--time'] ? parseTimeArg(opts['-t'] || opts['--time']) : '',
-      elapsed: 0, running: false, done: false
-    };
-    tasks.push(task); save(); renderTasks(); renderCalendar(); renderTimeline();
-    termOk(`Task added: "${name}" [${task.importance}] ${task.duration}min${task.startTime?' @ '+task.startTime:''}`);
-
-  } else if (sub === 'rm' || sub === 'del' || sub === 'delete') {
-    const q = args.join(' '); const t = findTask(q);
-    if (!t) { termError(`Task not found: ${q}`); return; }
-    stopTimer(t.id); tasks = tasks.filter(x => x.id !== t.id);
-    save(); renderTasks(); renderCalendar(); renderTimeline();
-    termOk(`Deleted task: "${t.name}"`);
-
-  } else if (sub === 'edit' || sub === 'e') {
-    const q = args.shift(); const t = findTask(q);
-    if (!t) { termError(`Task not found: ${q}`); return; }
-    const opts = parseOpts(args);
-    if (opts['-n'] || opts['--name'])     t.name       = opts['-n'] || opts['--name'];
-    if (opts['-p'] || opts['--priority']) t.importance = normalizeImp(opts['-p'] || opts['--priority']);
-    if (opts['-d'] || opts['--duration']) t.duration   = parseInt(opts['-d'] || opts['--duration']) || t.duration;
-    if (opts['-t'] || opts['--time'])     t.startTime  = parseTimeArg(opts['-t'] || opts['--time']);
-    t.elapsed = 0; stopTimer(t.id); save(); renderTasks(); renderCalendar(); renderTimeline();
-    termOk(`Updated task: "${t.name}"`);
-
-  } else if (sub === 'ls' || sub === 'list' || !sub) {
-    if (!tasks.length) { termWarn('No tasks'); return; }
-    termPrint('head', `Tasks (${tasks.length}):`);
-    tasks.forEach(t => {
-      const timer = t.running ? ` ▶ ${fmtTime(Math.max(t.duration*60-(t.elapsed||0),0))}` : '';
-      termPrint('out', `  ${t.name.padEnd(24)} [${t.importance.padEnd(8)}] ${t.duration}min${t.startTime?' @'+t.startTime:''}${timer}`);
-    });
-  } else { termError(`Unknown task subcommand: ${sub}`); }
-}
-
-// ── EVENT COMMANDS ──
-function cmdEvent(sub, args) {
-  if (sub === 'add' || sub === 'a') {
-    const name = args.shift();
-    if (!name) { termError('Name required: event add <name>'); return; }
-    const opts = parseOpts(args);
-    const schedType = opts['-s'] || opts['--schedule'] || 'once';
-    let schedDays = [];
-    if (schedType === 'weekdays') schedDays = [1,2,3,4,5];
-    else if (schedType === 'daily') schedDays = [0,1,2,3,4,5,6];
-    const ev = {
-      id: uid(), name,
-      importance: normalizeImp(opts['-p'] || opts['--priority'] || 'medium'),
-      duration: parseInt(opts['-d'] || opts['--duration'] || '60') || 60,
-      time: opts['-t'] || opts['--time'] ? parseTimeArg(opts['-t'] || opts['--time']) : '',
-      scheduleType: schedType,
-      date: schedType === 'once' ? parseDateArg(opts['--date'] || opts['-dt'] || 'today') : '',
-      schedDays,
-      recurring: !!(opts['--recurring'] || opts['-r']),
-      recurWeeks: parseInt(opts['--every'] || '1') || 1
-    };
-    events.push(ev); save(); renderEventList(); renderCalendar(); renderTimeline();
-    termOk(`Event added: "${name}" [${ev.scheduleType}]${ev.time?' @ '+ev.time:''}${ev.date?' on '+ev.date:''}`);
-
-  } else if (sub === 'rm' || sub === 'del' || sub === 'delete') {
-    const q = args.join(' '); const ev = findEvent(q);
-    if (!ev) { termError(`Event not found: ${q}`); return; }
-    events = events.filter(e => e.id !== ev.id);
-    save(); renderEventList(); renderCalendar(); renderTimeline();
-    termOk(`Deleted event: "${ev.name}"`);
-
-  } else if (sub === 'edit' || sub === 'e') {
-    const q = args.shift(); const ev = findEvent(q);
-    if (!ev) { termError(`Event not found: ${q}`); return; }
-    const opts = parseOpts(args);
-    if (opts['-n'] || opts['--name'])     ev.name       = opts['-n'] || opts['--name'];
-    if (opts['-p'] || opts['--priority']) ev.importance = normalizeImp(opts['-p'] || opts['--priority']);
-    if (opts['-d'] || opts['--duration']) ev.duration   = parseInt(opts['-d'] || opts['--duration']) || ev.duration;
-    if (opts['-t'] || opts['--time'])     ev.time       = parseTimeArg(opts['-t'] || opts['--time']);
-    if (opts['--date'] || opts['-dt'])    ev.date       = parseDateArg(opts['--date'] || opts['-dt']);
-    save(); renderEventList(); renderCalendar(); renderTimeline();
-    termOk(`Updated event: "${ev.name}"`);
-
-  } else if (sub === 'ls' || sub === 'list' || !sub) {
-    if (!events.length) { termWarn('No events'); return; }
-    termPrint('head', `Events (${events.length}):`);
-    events.forEach(ev => {
-      const sched = ev.scheduleType === 'once' ? ev.date : ev.scheduleType;
-      termPrint('out', `  ${ev.name.padEnd(24)} [${ev.importance.padEnd(8)}] ${ev.duration}min${ev.time?' @'+ev.time:''} ${sched}`);
-    });
-  } else { termError(`Unknown event subcommand: ${sub}`); }
-}
-
-// ── DEADLINE COMMANDS ──
-function cmdDeadline(sub, args) {
-  if (sub === 'add' || sub === 'a') {
-    const name = args.shift();
-    if (!name) { termError('Name required: deadline add <name>'); return; }
-    const opts = parseOpts(args);
-    const date = parseDateArg(opts['--date'] || opts['-dt'] || opts['-d'] || '');
-    const dl = { id: uid(), name, importance: normalizeImp(opts['-p'] || opts['--priority'] || 'medium'), date };
-    deadlines.push(dl); saveDeadlines(); renderDeadlines(); renderCalendar();
-    const cd = deadlineCountdown(date);
-    termOk(`Deadline added: "${name}" due ${date} (${cd.label})`);
-
-  } else if (sub === 'rm' || sub === 'del' || sub === 'delete') {
-    const q = args.join(' '); const dl = findDeadline(q);
-    if (!dl) { termError(`Deadline not found: ${q}`); return; }
-    deadlines = deadlines.filter(d => d.id !== dl.id);
-    saveDeadlines(); renderDeadlines(); renderCalendar();
-    termOk(`Deleted deadline: "${dl.name}"`);
-
-  } else if (sub === 'edit' || sub === 'e') {
-    const q = args.shift(); const dl = findDeadline(q);
-    if (!dl) { termError(`Deadline not found: ${q}`); return; }
-    const opts = parseOpts(args);
-    if (opts['-n'] || opts['--name'])     dl.name       = opts['-n'] || opts['--name'];
-    if (opts['-p'] || opts['--priority']) dl.importance = normalizeImp(opts['-p'] || opts['--priority']);
-    if (opts['--date'] || opts['-dt'] || opts['-d']) dl.date = parseDateArg(opts['--date'] || opts['-dt'] || opts['-d']);
-    saveDeadlines(); renderDeadlines(); renderCalendar();
-    termOk(`Updated deadline: "${dl.name}"`);
-
-  } else if (sub === 'ls' || sub === 'list' || !sub) {
-    if (!deadlines.length) { termWarn('No deadlines'); return; }
-    termPrint('head', `Deadlines (${deadlines.length}):`);
-    const sorted = [...deadlines].sort((a,b) => a.date.localeCompare(b.date));
-    sorted.forEach(dl => {
-      const cd = deadlineCountdown(dl.date);
-      termPrint('out', `  ${dl.name.padEnd(24)} [${dl.importance.padEnd(8)}] ${dl.date}  ${cd.label}`);
-    });
-  } else { termError(`Unknown deadline subcommand: ${sub}`); }
-}
-
-// ── ALARM COMMANDS ──
-function cmdAlarm(sub, args) {
-  if (sub === 'add' || sub === 'a') {
-    const timeRaw = args.shift();
-    if (!timeRaw) { termError('Time required: alarm add <time> [label]'); return; }
-    const time = parseTimeArg(timeRaw);
-    const label = args.join(' ') || 'Alarm';
-    alarms.push({ id: uid(), time, label, on: true, fired: false });
-    saveAlarms(); renderAlarms();
-    termOk(`Alarm set: ${time} — "${label}"`);
-
-  } else if (sub === 'rm' || sub === 'del') {
-    const q = args.join(' '); const al = findAlarm(q);
-    if (!al) { termError(`Alarm not found: ${q}`); return; }
-    alarms = alarms.filter(a => a.id !== al.id);
-    saveAlarms(); renderAlarms();
-    termOk(`Deleted alarm: ${al.time} "${al.label}"`);
-
-  } else if (sub === 'ls' || sub === 'list' || !sub) {
-    if (!alarms.length) { termWarn('No alarms'); return; }
-    termPrint('head', `Alarms (${alarms.length}):`);
-    alarms.forEach(a => termPrint('out', `  ${a.time}  ${a.label.padEnd(20)} ${a.on ? '[ON]' : '[OFF]'}`));
-  } else { termError(`Unknown alarm subcommand: ${sub}`); }
-}
-
-// ── LIST ALL ──
-function cmdList(sub) {
-  const target = sub || 'all';
-  if (target === 'all' || target === 'tasks' || target === 't') {
-    termPrint('head', `Tasks (${tasks.length}):`);
-    if (!tasks.length) termPrint('dim','  (none)');
-    tasks.forEach(t => termPrint('out', `  ${t.name.padEnd(24)} [${t.importance.padEnd(8)}] ${t.duration}min${t.startTime?' @'+t.startTime:''}${t.running?' ▶':''}`));
-  }
-  if (target === 'all' || target === 'events' || target === 'ev') {
-    termPrint('head', `Events (${events.length}):`);
-    if (!events.length) termPrint('dim','  (none)');
-    events.forEach(ev => { const s = ev.scheduleType==='once'?ev.date:ev.scheduleType; termPrint('out', `  ${ev.name.padEnd(24)} [${ev.importance.padEnd(8)}] ${ev.duration}min${ev.time?' @'+ev.time:''} ${s}`); });
-  }
-  if (target === 'all' || target === 'deadlines' || target === 'dl') {
-    const sorted = [...deadlines].sort((a,b)=>a.date.localeCompare(b.date));
-    termPrint('head', `Deadlines (${deadlines.length}):`);
-    if (!sorted.length) termPrint('dim','  (none)');
-    sorted.forEach(dl => { const cd=deadlineCountdown(dl.date); termPrint('out', `  ${dl.name.padEnd(24)} [${dl.importance.padEnd(8)}] ${dl.date}  ${cd.label}`); });
-  }
-  if (target === 'all' || target === 'alarms' || target === 'al') {
-    termPrint('head', `Alarms (${alarms.length}):`);
-    if (!alarms.length) termPrint('dim','  (none)');
-    alarms.forEach(a => termPrint('out', `  ${a.time}  ${a.label.padEnd(20)} ${a.on?'[ON]':'[OFF]'}`));
-  }
-}
-
-// ── DELETE (shorthand) ──
-function cmdDelete(sub, args) {
-  // rm task <name> | rm event <name> | rm deadline <name> | rm alarm <name>
-  const q = args.join(' ');
-  if (sub === 'task' || sub === 't')         { const t=findTask(q); if(!t){termError('Task not found: '+q);return;} stopTimer(t.id);tasks=tasks.filter(x=>x.id!==t.id);save();renderTasks();renderCalendar();termOk('Deleted task: "'+t.name+'"'); }
-  else if (sub === 'event' || sub === 'ev')  { const e=findEvent(q); if(!e){termError('Event not found: '+q);return;} events=events.filter(x=>x.id!==e.id);save();renderEventList();renderCalendar();termOk('Deleted event: "'+e.name+'"'); }
-  else if (sub === 'deadline' || sub === 'dl'){ const d=findDeadline(q); if(!d){termError('Deadline not found: '+q);return;} deadlines=deadlines.filter(x=>x.id!==d.id);saveDeadlines();renderDeadlines();renderCalendar();termOk('Deleted deadline: "'+d.name+'"'); }
-  else if (sub === 'alarm' || sub === 'al')  { const a=findAlarm(q); if(!a){termError('Alarm not found: '+q);return;} alarms=alarms.filter(x=>x.id!==a.id);saveAlarms();renderAlarms();termOk('Deleted alarm: '+a.time+' "'+a.label+'"'); }
-  else termError('Specify type: rm task|event|deadline|alarm <name>');
-}
-
-// ── EDIT (shorthand) ──
-function cmdEdit(sub, args) {
-  const q = args.shift();
-  if (sub === 'task' || sub === 't')          cmdTask('edit', [q, ...args]);
-  else if (sub === 'event' || sub === 'ev')   cmdEvent('edit', [q, ...args]);
-  else if (sub === 'deadline' || sub === 'dl') cmdDeadline('edit', [q, ...args]);
-  else termError('Specify type: edit task|event|deadline <name> [options]');
-}
-
-// ── TIMER CONTROLS ──
-function cmdTimerCtl(action, q) {
-  if (!q) { termError(`Specify task name: ${action} <name>`); return; }
-  const t = findTask(q);
-  if (!t) { termError(`Task not found: ${q}`); return; }
-  if (action === 'start') { startTimer(t.id); termOk(`Started: "${t.name}"`); }
-  else if (action === 'stop') { stopTimer(t.id); termOk(`Paused: "${t.name}"`); }
-  else if (action === 'reset') { resetTimer(t.id); termOk(`Reset: "${t.name}"`); }
-  else if (action === 'done') { stopTimer(t.id); t.elapsed = t.duration*60; save(); renderTasks(); termOk(`Marked done: "${t.name}"`); }
-}
-
-// ── OPTION PARSER ──
-function parseOpts(args) {
-  const opts = {};
-  for (let i = 0; i < args.length; i++) {
-    if (args[i].startsWith('-')) { opts[args[i]] = args[i+1] || true; i++; }
-  }
-  return opts;
-}
-
-function normalizeImp(s) {
-  if (!s) return 'medium';
-  s = s.toLowerCase();
-  if (s === 'c' || s === 'crit' || s === 'critical') return 'critical';
-  if (s === 'h' || s === 'hi')   return 'high';
-  if (s === 'l' || s === 'lo')   return 'low';
-  return 'medium';
-}
-
-// ── KEYBOARD HANDLER ──
-function termKeydown(e) {
-  const inp = document.getElementById('termInput');
-  if (e.key === 'Enter') {
-    const val = inp.value.trim();
-    inp.value = '';
-    if (val) termRun(val);
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    if (termHistIdx < termHistory.length - 1) { termHistIdx++; inp.value = termHistory[termHistIdx]; }
-  } else if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    if (termHistIdx > 0) { termHistIdx--; inp.value = termHistory[termHistIdx]; }
-    else { termHistIdx = -1; inp.value = ''; }
-  } else if (e.key === 'Tab') {
-    e.preventDefault();
-    // Tab completion for commands
-    const cmds = ['task','event','deadline','alarm','ls','clear','sync','clock','help','start','stop','reset','done'];
-    const cur = inp.value.toLowerCase();
-    const match = cmds.find(c => c.startsWith(cur));
-    if (match) inp.value = match + ' ';
-  } else if (e.key === '`' || (e.key === 't' && e.ctrlKey)) {
-    e.preventDefault(); toggleTerminal();
-  }
-}
-
-// ── DRAG TO REPOSITION ──
-function initTermDrag() {
-  const panel = document.getElementById('termPanel');
-  const bar   = document.getElementById('termTitlebar');
-  if (!bar || !panel) return;
-  let startX, startY, startR, startB;
-  bar.addEventListener('mousedown', e => {
-    const rect = panel.getBoundingClientRect();
-    startX = e.clientX; startY = e.clientY;
-    startR = window.innerWidth  - rect.right;
-    startB = window.innerHeight - rect.bottom;
-    panel.style.transition = 'none';
-    const onMove = ev => {
-      const dx = startX - ev.clientX, dy = startY - ev.clientY;
-      panel.style.right  = Math.max(0, startR + dx) + 'px';
-      panel.style.bottom = Math.max(0, startB + dy) + 'px';
-    };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  });
-}
-
-// ── KEYBOARD SHORTCUT: backtick to toggle ──
-document.addEventListener('keydown', e => {
-  if (e.key === '`' && !e.ctrlKey && !e.metaKey && document.activeElement.id !== 'termInput') {
-    toggleTerminal();
-  }
-});
-
-// ── INIT TERMINAL ──
-window.addEventListener('load', () => {
-  const inp = document.getElementById('termInput');
-  if (inp) inp.addEventListener('keydown', termKeydown);
-  initTermDrag();
-});
-
-window.toggleTerminal = toggleTerminal;
-window.toggleTaskDone = toggleTaskDone;
-window.toggleEventDone = toggleEventDone;
-window.toggleDeadlineDone = toggleDeadlineDone;
-window.termRun = termRun;
