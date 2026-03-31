@@ -105,16 +105,13 @@ function showSyncStatus(state) {
 
 
 const SUBJECTS = {
-  'chem':     { label:'Chemistry',    color:'#E67E22', bg:'#FEF5EC' },
-  'bio':      { label:'Biology',      color:'#27AE60', bg:'#EAFAF1' },
-  'math':     { label:'Math',         color:'#2980B9', bg:'#EBF5FB' },
-  'physics':  { label:'Physics',      color:'#8E44AD', bg:'#F5EEF8' },
-  'robotics': { label:'Robotics',     color:'#16A085', bg:'#E8F8F5' },
-  'english':  { label:'English',      color:'#C0392B', bg:'#FDEDEC' },
-  'history':  { label:'History',      color:'#795548', bg:'#EFEBE9' },
-  'fll':      { label:'FLL',          color:'#1ABC9C', bg:'#E8F8F5' },
-  'scioly':   { label:'Sci Oly',      color:'#F39C12', bg:'#FEF9E7' },
-  'other':    { label:'Other',        color:'#7F8C8D', bg:'#F2F3F4' },
+  'pe':      { label:'P.E.',           color:'#E74C3C', bg:'#FDEDEC' },  // bold red
+  'math':    { label:'Math',           color:'#2471A3', bg:'#EBF5FB' },  // strong blue
+  'science': { label:'Science',        color:'#1E8449', bg:'#E9F7EF' },  // forest green
+  'choir':   { label:'Choir',          color:'#8E44AD', bg:'#F5EEF8' },  // purple
+  'la':      { label:'Lang. Arts',     color:'#D35400', bg:'#FEF5EC' },  // burnt orange
+  'socstu':  { label:'Soc. Studies',   color:'#B7950B', bg:'#FEF9E7' },  // gold/amber
+  'other':   { label:'Other',          color:'#626567', bg:'#F2F3F4' },  // neutral grey
 };
 function subjectBadge(sub) {
   const s = SUBJECTS[sub];
@@ -283,7 +280,8 @@ function renderTasks() {
       const [h,m]=task.startTime.split(':').map(Number); return h*60+m < todayMins;
     })();
     const checkedClass = task.checked ? ' task-checked' : (isPastDue ? ' task-past-due' : '');
-    return '<div class="task-card' + (task.running?' running':'') + checkedClass + '" id="task_' + task.id + '">' +
+    const subStyle = (task.subject && SUBJECTS[task.subject]) ? ' style="border-left:4px solid '+SUBJECTS[task.subject].color+';background:'+SUBJECTS[task.subject].bg+'08;"' : '';
+    return '<div class="task-card' + (task.running?' running':'') + checkedClass + '"' + (subStyle||'') + ' id="task_' + task.id + '">' +
       '<div class="task-header">' +
         '<button class="task-check-btn' + (task.checked?' checked':'') + '" onclick="toggleTaskChecked(\''+ task.id +'\')" title="' + (task.checked?'Mark incomplete':'Mark complete') + '">' +
           (task.checked ? '✓' : '') +
@@ -479,7 +477,7 @@ function addDeadline() {
   const name=document.getElementById('newDlName').value.trim();
   const date=document.getElementById('newDlDate').value;
   if (!name||!date) return;
-  deadlines.push({ id:uid(), name, importance:document.getElementById('newDlImp').value, date });
+  deadlines.push({ id:uid(), name, importance:document.getElementById('newDlImp').value, date, subject: document.getElementById('newDlSubject')?.value||'' });
   saveDeadlines(); document.getElementById('newDlName').value=''; renderDeadlines();
 }
 
@@ -493,6 +491,7 @@ function saveEditDeadline(id) {
   const n=document.getElementById('dlEditName_'+id); if(n&&n.value.trim()) dl.name=n.value.trim();
   const i=document.getElementById('dlEditImp_'+id);  if(i) dl.importance=i.value;
   const d=document.getElementById('dlEditDate_'+id); if(d&&d.value) dl.date=d.value;
+  const s=document.getElementById('dlEditSubject_'+id); if(s) dl.subject=s.value;
   saveDeadlines(); renderDeadlines();
 }
 
@@ -513,13 +512,17 @@ function renderDeadlines() {
   const done=[...deadlines].filter(d=>d.checked).sort((a,b)=>a.date.localeCompare(b.date));
   function dlCard(dl) {
     const cd=deadlineCountdown(dl.date);
-    return '<div class="deadline-card' + (dl.checked?' task-checked':'') + '" id="dlcard_' + dl.id + '">' +
+    const subInfo = dl.subject && SUBJECTS[dl.subject] ? SUBJECTS[dl.subject] : null;
+    const subBorderStyle = subInfo ? ' style="border-left:4px solid '+subInfo.color+';background:'+subInfo.bg+'08;"' : '';
+    const subjectOptions = Object.entries(SUBJECTS).map(([k,v])=>'<option value="'+k+'"'+(dl.subject===k?' selected':'')+'>'+v.label+'</option>').join('');
+    return '<div class="deadline-card' + (dl.checked?' task-checked':'') + '" id="dlcard_' + dl.id + '"' + subBorderStyle + '>' +
       '<div class="deadline-header">' +
         '<button class="task-check-btn' + (dl.checked?' checked':'') + '" onclick="toggleDeadlineChecked(\''+ dl.id +'\')" title="' + (dl.checked?'Mark incomplete':'Mark done') + '">' +
           (dl.checked ? '✓' : '') +
         '</button>' +
         '<div class="deadline-name' + (dl.checked?' done-text':'') + '">' + escHtml(dl.name) + '</div>' +
         '<span class="importance-badge ' + impClass(dl.importance) + '">' + impLabel(dl.importance) + '</span>' +
+        (subInfo ? '<span class="subject-badge" style="background:'+subInfo.bg+';color:'+subInfo.color+';border-color:'+subInfo.color+'40;">'+subInfo.label+'</span>' : '') +
       '</div>' +
       (!dl.checked ? (
         '<div class="deadline-meta"><span>📅 ' + dl.date + '</span><span class="deadline-countdown ' + cd.cls + '">' + cd.label + '</span></div>' +
@@ -534,6 +537,9 @@ function renderDeadlines() {
             '<option value="medium"' + (dl.importance==='medium'?' selected':'') + '>Medium</option>' +
             '<option value="high"' + (dl.importance==='high'?' selected':'') + '>High</option>' +
             '<option value="critical"' + (dl.importance==='critical'?' selected':'') + '>Critical</option>' +
+          '</select>' +
+          '<select id="dlEditSubject_' + dl.id + '" style="width:100%;border:1.5px solid var(--border2);border-radius:6px;padding:6px 8px;font-family:\'DM Sans\',sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;margin-bottom:6px;display:block;cursor:pointer;">' +
+            '<option value="">— No Subject —</option>' + subjectOptions +
           '</select>' +
           '<input type="date" id="dlEditDate_' + dl.id + '" value="' + dl.date + '" />' +
           '<div style="display:flex;gap:6px;">' +
@@ -802,8 +808,8 @@ function calNext() { calDate=new Date(calDate.getFullYear(),calDate.getMonth()+1
 function renderTimeline() {
   const today=new Date(), tlDiv=document.getElementById('timelineView');
   const allItems=[];
-  tasks.forEach(t=>{ if(t.startTime){const[h,m]=t.startTime.split(':').map(Number); allItems.push({type:'task',hour:h,min:m,name:t.name,duration:t.duration,importance:t.importance,checked:t.checked||false}); }});
-  events.forEach(ev=>{ if(eventOccursOn(ev,today)&&ev.time){const[h,m]=ev.time.split(':').map(Number); allItems.push({type:'event',hour:h,min:m,name:ev.name,duration:ev.duration,importance:ev.importance,checked:false}); }});
+  tasks.forEach(t=>{ if(t.startTime){const[h,m]=t.startTime.split(':').map(Number); allItems.push({type:'task',hour:h,min:m,name:t.name,duration:t.duration,importance:t.importance,checked:t.checked||false,subject:t.subject||''}); }});
+  events.forEach(ev=>{ if(eventOccursOn(ev,today)&&ev.time){const[h,m]=ev.time.split(':').map(Number); allItems.push({type:'event',hour:h,min:m,name:ev.name,duration:ev.duration,importance:ev.importance,checked:false,subject:''}); }});
 
   // Build full 24hr timeline with pixel-accurate blocks
   const HOUR_HEIGHT = 60; // px per hour
@@ -869,10 +875,14 @@ function renderTimeline() {
     const endH = Math.floor(item.endMins/60), endM = item.endMins%60;
     const endStr = String(endH).padStart(2,'0')+':'+String(endM).padStart(2,'0');
     const isEvent = item.type==='event';
+    const subInfo = !isEvent && item.subject && SUBJECTS[item.subject] ? SUBJECTS[item.subject] : null;
     const cls = isEvent ? 'tl24-block event-block' : ('tl24-block task-block' + (item.checked?' tl-checked':''));
-    blocksHtml += '<div class="'+cls+'" style="top:'+top+'px;height:'+height+'px;left:calc(60px + '+left+'%);width:calc('+colW+'% - 4px);">' +
+    const subStyle = subInfo
+      ? 'border-left:3px solid '+subInfo.color+';background:'+subInfo.bg+';'
+      : '';
+    blocksHtml += '<div class="'+cls+'" style="top:'+top+'px;height:'+height+'px;left:calc(60px + '+left+'%);width:calc('+colW+'% - 4px);'+subStyle+'">' +
       '<div class="tl24-name">'+escHtml(item.name)+'</div>' +
-      '<div class="tl24-meta">'+timeStr+'–'+endStr+' · '+item.duration+'m</div>' +
+      '<div class="tl24-meta">'+timeStr+'–'+endStr+' · '+item.duration+'m'+(subInfo?' · <span style="font-size:9px;font-weight:600;color:'+subInfo.color+'">'+subInfo.label+'</span>':'')+'</div>' +
       '<div class="tl24-imp '+ impClass(item.importance) +'" style="font-size:9px;padding:1px 4px;border-radius:6px;font-weight:600;display:inline-block;margin-top:2px;">'+impLabel(item.importance)+'</div>' +
     '</div>';
   });
@@ -891,6 +901,7 @@ function switchMain(view) {
   document.getElementById('mainTasks').style.display    = view==='tasks'    ? '' : 'none';
   document.getElementById('mainTimeline').style.display = view==='timeline' ? '' : 'none';
   if(view==='timeline') renderTimeline();
+  document.body.dataset.mode = view;
 }
 
 // ── WEATHER ──
@@ -968,33 +979,166 @@ function burstConfetti() {
 }
 
 // ── SOUNDS ──
+// Custom sound store: keys are 'taskEnd' | 'alarm' | 'deadline'
+// Values: { name: string, url: string (blob URL) }
+const CUSTOM_SOUNDS = JSON.parse(localStorage.getItem('dp_custom_sounds') || '{}');
+
+function saveCustomSounds() {
+  // Only save metadata (names), not blob URLs — those are rebuilt on drop
+  const meta = {};
+  Object.entries(CUSTOM_SOUNDS).forEach(([k,v]) => { meta[k] = { name: v.name }; });
+  localStorage.setItem('dp_custom_sounds', JSON.stringify(meta));
+}
+
+function playCustomOrSynth(key, synthFn) {
+  const custom = CUSTOM_SOUNDS[key];
+  if (custom && custom.url) {
+    try {
+      const audio = new Audio(custom.url);
+      audio.volume = 0.8;
+      audio.play().catch(() => synthFn());
+      return;
+    } catch(e) {}
+  }
+  synthFn();
+}
+
 function playTaskEndSound() {
-  try {
-    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    if(audioCtx.state==='suspended') audioCtx.resume();
-    const now=audioCtx.currentTime;
-    [523.25,659.25,783.99].forEach((freq,i)=>{
-      const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
-      osc.connect(gain);gain.connect(audioCtx.destination);osc.type='sine';osc.frequency.value=freq;
-      gain.gain.setValueAtTime(0,now+i*0.18);gain.gain.linearRampToValueAtTime(0.35,now+i*0.18+0.04);gain.gain.exponentialRampToValueAtTime(0.001,now+i*0.18+0.5);
-      osc.start(now+i*0.18);osc.stop(now+i*0.18+0.55);
-    });
-  } catch(e){}
+  playCustomOrSynth('taskEnd', () => {
+    try {
+      if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+      if(audioCtx.state==='suspended') audioCtx.resume();
+      const now=audioCtx.currentTime;
+      [523.25,659.25,783.99].forEach((freq,i)=>{
+        const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
+        osc.connect(gain);gain.connect(audioCtx.destination);osc.type='sine';osc.frequency.value=freq;
+        gain.gain.setValueAtTime(0,now+i*0.18);gain.gain.linearRampToValueAtTime(0.35,now+i*0.18+0.04);gain.gain.exponentialRampToValueAtTime(0.001,now+i*0.18+0.5);
+        osc.start(now+i*0.18);osc.stop(now+i*0.18+0.55);
+      });
+    } catch(e){}
+  });
 }
 
 function playDeadlineWarningSound(criticality) {
+  playCustomOrSynth('deadline', () => {
+    try {
+      if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+      if(audioCtx.state==='suspended') audioCtx.resume();
+      const now=audioCtx.currentTime;
+      const configs={critical:{freqs:[880,880,1100],interval:0.22,gain:0.5},high:{freqs:[660,880],interval:0.3,gain:0.4},medium:{freqs:[523,659],interval:0.4,gain:0.3},low:{freqs:[440,523],interval:0.5,gain:0.25}};
+      const cfg=configs[criticality]||configs.medium;
+      cfg.freqs.forEach((freq,i)=>{
+        const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
+        osc.connect(gain);gain.connect(audioCtx.destination);osc.type=criticality==='critical'?'square':'sine';osc.frequency.value=freq;
+        const start=now+i*cfg.interval;gain.gain.setValueAtTime(cfg.gain,start);gain.gain.exponentialRampToValueAtTime(0.001,start+0.35);osc.start(start);osc.stop(start+0.4);
+      });
+    } catch(e){}
+  });
+}
+
+function playAlarmSoundFn() {
   try {
     if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
     if(audioCtx.state==='suspended') audioCtx.resume();
-    const now=audioCtx.currentTime;
-    const configs={critical:{freqs:[880,880,1100],interval:0.22,gain:0.5},high:{freqs:[660,880],interval:0.3,gain:0.4},medium:{freqs:[523,659],interval:0.4,gain:0.3},low:{freqs:[440,523],interval:0.5,gain:0.25}};
-    const cfg=configs[criticality]||configs.medium;
-    cfg.freqs.forEach((freq,i)=>{
-      const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
-      osc.connect(gain);gain.connect(audioCtx.destination);osc.type=criticality==='critical'?'square':'sine';osc.frequency.value=freq;
-      const start=now+i*cfg.interval;gain.gain.setValueAtTime(cfg.gain,start);gain.gain.exponentialRampToValueAtTime(0.001,start+0.35);osc.start(start);osc.stop(start+0.4);
-    });
+    const beep=(freq,start,dur)=>{
+      const osc=audioCtx.createOscillator(),g=audioCtx.createGain();
+      osc.connect(g);g.connect(audioCtx.destination);osc.frequency.value=freq;osc.type='sine';
+      g.gain.setValueAtTime(0.45,audioCtx.currentTime+start);g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+start+dur);
+      osc.start(audioCtx.currentTime+start);osc.stop(audioCtx.currentTime+start+dur+0.05);
+    };
+    for(let i=0;i<6;i++){beep(880,i*0.6,0.2);beep(1100,i*0.6+0.25,0.15);}
+    alarmAudio=setTimeout(playAlarmSound,4000);
   } catch(e){}
+}
+
+// ── SOUND SET OVERLAY ──
+const SOUND_SLOTS = [
+  { key: 'taskEnd',  icon: '✅', label: 'Task Done / Pomodoro', hint: 'Plays when a task timer ends' },
+  { key: 'alarm',    icon: '⏰', label: 'Alarm',                hint: 'Plays when an alarm fires' },
+  { key: 'deadline', icon: '📅', label: 'Deadline Warning',     hint: 'Plays for deadline alerts' },
+];
+
+function openSoundSetOverlay() {
+  let existing = document.getElementById('soundDropOverlay');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'soundDropOverlay';
+  overlay.className = 'sound-drop-overlay';
+  overlay.innerHTML = `
+    <div class="sound-drop-box">
+      <div class="sound-drop-title">🎵 Custom Alert Sounds</div>
+      <div class="sound-drop-sub">Drag & drop an MP3 onto each slot, or click to browse</div>
+      <div class="sound-drop-zones" id="soundDropZones"></div>
+      <button class="sound-drop-close" onclick="document.getElementById('soundDropOverlay').remove()">Close</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  renderSoundSlots();
+}
+
+function renderSoundSlots() {
+  const container = document.getElementById('soundDropZones');
+  if (!container) return;
+  container.innerHTML = SOUND_SLOTS.map(slot => {
+    const custom = CUSTOM_SOUNDS[slot.key];
+    return `<div class="sound-drop-zone ${custom ? 'has-custom' : ''}" id="sdz_${slot.key}"
+      ondragover="event.preventDefault();this.classList.add('drag-over')"
+      ondragleave="this.classList.remove('drag-over')"
+      ondrop="handleSoundDrop(event,'${slot.key}')"
+      onclick="triggerSoundFilePick('${slot.key}')">
+      <div class="sdz-icon">${slot.icon}</div>
+      <div class="sdz-info">
+        <div class="sdz-label">${slot.label}</div>
+        ${custom
+          ? `<div class="sdz-file">✓ ${custom.name}</div>`
+          : `<div class="sdz-hint">${slot.hint} · drop MP3 or click</div>`}
+      </div>
+      ${custom ? `<button class="sdz-clear" title="Remove custom sound" onclick="clearCustomSound(event,'${slot.key}')">✕</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function handleSoundDrop(e, key) {
+  e.preventDefault();
+  const zone = document.getElementById('sdz_' + key);
+  if (zone) zone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  loadSoundFile(file, key);
+}
+
+function triggerSoundFilePick(key) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'audio/mpeg,audio/mp3,audio/*';
+  inp.onchange = () => { if (inp.files[0]) loadSoundFile(inp.files[0], key); };
+  inp.click();
+}
+
+function loadSoundFile(file, key) {
+  const url = URL.createObjectURL(file);
+  // Revoke old blob URL if any
+  if (CUSTOM_SOUNDS[key] && CUSTOM_SOUNDS[key].url) {
+    try { URL.revokeObjectURL(CUSTOM_SOUNDS[key].url); } catch(e) {}
+  }
+  CUSTOM_SOUNDS[key] = { name: file.name, url };
+  saveCustomSounds();
+  renderSoundSlots();
+  // Preview the sound
+  const audio = new Audio(url);
+  audio.volume = 0.6;
+  audio.play().catch(() => {});
+  showToast('✓ Sound set: ' + file.name);
+}
+
+function clearCustomSound(e, key) {
+  e.stopPropagation();
+  if (CUSTOM_SOUNDS[key] && CUSTOM_SOUNDS[key].url) {
+    try { URL.revokeObjectURL(CUSTOM_SOUNDS[key].url); } catch(ex) {}
+  }
+  delete CUSTOM_SOUNDS[key];
+  saveCustomSounds();
+  renderSoundSlots();
+  showToast('Sound reset to default');
 }
 
 
@@ -1119,18 +1263,7 @@ function fireAlarm(alarm) {
 }
 
 function playAlarmSound() {
-  try {
-    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    if(audioCtx.state==='suspended') audioCtx.resume();
-    const beep=(freq,start,dur)=>{
-      const osc=audioCtx.createOscillator(),g=audioCtx.createGain();
-      osc.connect(g);g.connect(audioCtx.destination);osc.frequency.value=freq;osc.type='sine';
-      g.gain.setValueAtTime(0.45,audioCtx.currentTime+start);g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+start+dur);
-      osc.start(audioCtx.currentTime+start);osc.stop(audioCtx.currentTime+start+dur+0.05);
-    };
-    for(let i=0;i<6;i++){beep(880,i*0.6,0.2);beep(1100,i*0.6+0.25,0.15);}
-    alarmAudio=setTimeout(playAlarmSound,4000);
-  } catch(e){}
+  playCustomOrSynth('alarm', playAlarmSoundFn);
 }
 
 function dismissAlarm() { firingAlarm=null;clearTimeout(alarmAudio);document.getElementById('alarmRingOverlay').classList.remove('ringing');renderAlarms(); }
@@ -1148,6 +1281,7 @@ let clockModeOpen=false,clockModeInterval=null,clockModeInterval2=null;
 function openClockMode() {
   clockModeOpen=true;
   document.getElementById('clockOverlay').classList.add('open');
+  document.body.dataset.mode = 'clock';
   renderAlarms();
   fetchWeather();
   updateClockMode();
@@ -1159,6 +1293,7 @@ function openClockMode() {
 function closeClockMode() {
   clockModeOpen=false;
   document.getElementById('clockOverlay').classList.remove('open');
+  document.body.dataset.mode = document.getElementById('mainTimeline').style.display !== 'none' ? 'timeline' : 'tasks';
   clearInterval(clockModeInterval);clearInterval(clockModeInterval2);
 }
 
@@ -1409,10 +1544,11 @@ function mobileTab(tab) {
   const btn=document.getElementById('mnav-'+tab);if(btn)btn.classList.add('active');
   if(window.innerWidth>900) return;
   const tp=document.getElementById('taskPanel'),ma=document.querySelector('.main-area'),cp=document.querySelector('.panel.right');
-  [tp,ma,cp].forEach(el=>{if(el)el.classList.add('hidden-mobile');});
+  [tp,ma,cp].forEach(el=>{if(el){el.classList.add('hidden-mobile');el.classList.remove('mobile-calendar-active');}});
   if(tab==='tasks'){tp.classList.remove('hidden-mobile');document.getElementById('mainTasks').style.display='';document.getElementById('mainTimeline').style.display='none';}
   else if(tab==='timeline'){ma.classList.remove('hidden-mobile');document.getElementById('mainTasks').style.display='none';document.getElementById('mainTimeline').style.display='';renderTimeline();}
-  else if(tab==='calendar'){cp.classList.remove('hidden-mobile');}
+  else if(tab==='calendar'){if(cp){cp.classList.remove('hidden-mobile');cp.classList.add('mobile-calendar-active');}}
+  document.body.dataset.mode = tab;
 }
 
 function handleResize() {
@@ -1585,6 +1721,7 @@ function termRun(raw) {
       case 'week': openWeekView(); termOk('Week view opened'); break;
       case 'exam': case 'exams': openExamCountdown(); termOk('Exam countdown opened'); break;
       case 'heatmap': renderHeatmap('termHeatmapDiv'); const thd=document.getElementById('termHeatmapDiv'); if(thd)thd.style.display='block'; break;
+      case 'sound': case 'sounds': cmdSound(sub, rest); break;
       default: termError(`Unknown command: ${cmd}. Type 'help' for commands.`);
     }
   } catch(e) { termError(e.message); }
@@ -1632,6 +1769,10 @@ function cmdHelp(topic) {
       ['stopwatch',     'Open stopwatch'],
       ['weather',       'Refresh weather'],
       ['check <n>',     'Mark task done (alias for done)'],
+      ['sound set',     'Custom MP3 for alarm/task/deadline'],
+      ['sound ls',      'List current sounds'],
+      ['sound test',    'Preview a sound slot'],
+      ['sound clear',   'Reset sound to default'],
     ];
     cmds.forEach(([c,d]) => termPrint('out', `  ${c.padEnd(20)} ${d}`));
     termPrint('dim', "  Type 'help task' for task syntax");
@@ -2082,6 +2223,7 @@ function openFocusMode(taskId) {
   const overlay = document.getElementById('focusOverlay');
   overlay.style.display = 'flex';
   document.body.style.overflow = 'hidden';
+  document.body.dataset.mode = 'focus';
   updateFocusMode();
   focusInterval = setInterval(updateFocusMode, 1000);
   if (!task.running) startTimer(task.id);
@@ -2090,6 +2232,7 @@ function openFocusMode(taskId) {
 function closeFocusMode() {
   document.getElementById('focusOverlay').style.display = 'none';
   document.body.style.overflow = '';
+  document.body.dataset.mode = document.getElementById('mainTimeline').style.display !== 'none' ? 'timeline' : 'tasks';
   clearInterval(focusInterval);
   focusModeTask = null;
 }
@@ -3249,6 +3392,41 @@ function cmdDep(sub, args) {
   } else { termError('Usage: dep ls|add|rm'); }
 }
 
+function cmdSound(sub, args) {
+  if (!sub || sub === 'set' || sub === 'open') {
+    openSoundSetOverlay();
+    termOk('Sound settings opened — drag & drop MP3 files onto each slot');
+  } else if (sub === 'ls' || sub === 'list') {
+    termPrint('head', '── Custom Sounds ──');
+    SOUND_SLOTS.forEach(slot => {
+      const c = CUSTOM_SOUNDS[slot.key];
+      termPrint('out', `  ${slot.icon} ${slot.label.padEnd(22)} ${c ? '✓ ' + c.name : '(default synth)'}`);
+    });
+    termPrint('dim', "  Run 'sound set' to open the drag-and-drop panel");
+  } else if (sub === 'clear' || sub === 'reset') {
+    const key = args[0];
+    if (key) {
+      const slot = SOUND_SLOTS.find(s => s.key === key || s.label.toLowerCase().includes(key.toLowerCase()));
+      if (!slot) { termError('Unknown slot: ' + key + '. Use: taskEnd, alarm, deadline'); return; }
+      clearCustomSound({ stopPropagation: ()=>{} }, slot.key);
+      termOk('Reset ' + slot.label + ' to default');
+    } else {
+      SOUND_SLOTS.forEach(s => clearCustomSound({ stopPropagation: ()=>{} }, s.key));
+      termOk('All sounds reset to defaults');
+    }
+  } else if (sub === 'test' || sub === 'preview') {
+    const key = args[0] || 'taskEnd';
+    const slot = SOUND_SLOTS.find(s => s.key === key || s.label.toLowerCase().includes(key.toLowerCase()));
+    if (!slot) { termError('Unknown slot. Use: taskEnd, alarm, deadline'); return; }
+    if (slot.key === 'taskEnd') playTaskEndSound();
+    else if (slot.key === 'alarm') { const a = firingAlarm; firingAlarm = null; playAlarmSound(); firingAlarm = a; }
+    else if (slot.key === 'deadline') playDeadlineWarningSound('high');
+    termOk('Playing: ' + slot.label);
+  } else {
+    termError('Usage: sound set | sound ls | sound test [slot] | sound clear [slot]');
+  }
+}
+
 function cmdRecurring(sub, args) {
   const q = args.join(' ');
   if (sub === 'set') {
@@ -3287,7 +3465,7 @@ function termKeydown(e) {
   } else if (e.key === 'Tab') {
     e.preventDefault();
     // Tab completion for commands
-    const cmds = ['task','event','deadline','alarm','ls','clear','sync','clock','help','start','stop','reset','done'];
+    const cmds = ['task','event','deadline','alarm','ls','clear','sync','clock','help','start','stop','reset','done','sound','sounds'];
     const cur = inp.value.toLowerCase();
     const match = cmds.find(c => c.startsWith(cur));
     if (match) inp.value = match + ' ';
@@ -3360,11 +3538,13 @@ Object.assign(window,{
   openWeekView,closeWeekView,weekViewPrev,weekViewNext,
   openExamCountdown,closeExamCountdown,stampExamPlan,
   enableTimeboxMode,disableTimeboxMode,
-  toggleTerminal,termRun
+  toggleTerminal,termRun,
+  openSoundSetOverlay,handleSoundDrop,triggerSoundFilePick,clearCustomSound,renderSoundSlots,
 });
 
 // ── INIT ──
 async function init() {
+  document.body.dataset.mode = 'tasks';
   const today=new Date();
   document.getElementById('todayLabel').textContent=DAYS[today.getDay()]+', '+MONTHS[today.getMonth()]+' '+today.getDate()+', '+today.getFullYear();
   const pad=n=>String(n).padStart(2,'0');
