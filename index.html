@@ -34,6 +34,7 @@
     <h1 class="serif">Daily Planner</h1>
     <div class="date-badge" id="todayLabel"></div>
     <div class="spacer"></div>
+    <button class="analytics-btn" onclick="openAnalytics()" title="Analytics">📊 Analytics</button>
     <div class="tab-group">
       <button class="tab-btn active" onclick="switchMain('tasks')">Tasks</button>
       <button class="tab-btn" onclick="switchMain('timeline')">Timeline</button>
@@ -140,6 +141,9 @@
       <!-- DEADLINES STRIP: compact pills row under clock -->
       <div class="cm-deadline-strip" id="cmDeadlineStrip"></div>
 
+      <!-- Countdown tiles -->
+      <div class="cm-countdown-tiles" id="cmCountdownTiles" style="display:none;"></div>
+
       <div class="cm-divider"></div>
 
       <!-- BOTTOM ROW: weather left, upcoming right -->
@@ -162,15 +166,36 @@
 
       <div class="cm-divider" style="margin-top:20px;"></div>
 
-      <!-- ALARMS -->
-      <div class="cm-section-label">Alarms</div>
-      <div class="cm-alarm-section">
-        <div class="cm-alarm-add">
-          <input type="time" class="cm-alarm-time-input" id="newAlarmTime" />
-          <input type="text" class="cm-alarm-label-input" id="newAlarmLabel" placeholder="Label (optional)" />
-          <button class="cm-alarm-add-btn" onclick="addAlarm()">+ Add alarm</button>
+      <!-- UTILS TABS -->
+      <div class="cm-divider" style="margin-top:8px;"></div>
+      <div class="cm-utils-section">
+        <div class="cm-util-tabs">
+          <button class="cm-util-tab active" data-tab="alarms" onclick="openCmTab('alarms')">&#9200; Alarms</button>
+          <button class="cm-util-tab" data-tab="pom" onclick="openCmTab('pom')">&#127813; Pomodoro</button>
+          <button class="cm-util-tab" data-tab="sw" onclick="openCmTab('sw')">&#9201; Stopwatch</button>
+          <button class="cm-util-tab" data-tab="notes" onclick="openCmTab('notes')">&#128221; Notes</button>
         </div>
-        <div class="cm-alarm-list" id="alarmList"></div>
+        <div class="cm-util-panel" data-panel="alarms">
+          <div class="cm-alarm-section" style="margin-top:10px;">
+            <div class="cm-alarm-add">
+              <input type="time" class="cm-alarm-time-input" id="newAlarmTime" />
+              <input type="text" class="cm-alarm-label-input" id="newAlarmLabel" placeholder="Label (optional)" />
+              <button class="cm-alarm-add-btn" onclick="addAlarm()">+ Add alarm</button>
+            </div>
+            <div class="cm-alarm-list" id="alarmList"></div>
+          </div>
+        </div>
+        <div class="cm-util-panel" data-panel="pom" style="display:none;">
+          <div id="cmPomDisplay" class="cm-pom-display"></div>
+        </div>
+        <div class="cm-util-panel" data-panel="sw" style="display:none;">
+          <div id="cmSwDisplay" class="cm-pom-display"></div>
+        </div>
+        <div class="cm-util-panel" data-panel="notes" style="display:none;">
+          <div class="cm-notes-wrap">
+            <textarea id="cmNotesArea" class="cm-notes-area" placeholder="Quick notes..." oninput="saveNote(this.value)"></textarea>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -208,7 +233,117 @@
     </div>
   </div>
 
+  <!-- FOCUS MODE OVERLAY -->
+  <div class="focus-overlay" id="focusOverlay" style="display:none;">
+    <div class="focus-inner">
+      <div class="focus-clock" id="focusClock"></div>
+      <div class="focus-task-label">Currently working on</div>
+      <div class="focus-task-name" id="focusTaskName"></div>
+      <span class="focus-imp-badge" id="focusImp"></span>
+      <div class="focus-countdown" id="focusCountdown">00:00</div>
+      <div class="focus-bar-wrap"><div class="focus-bar" id="focusBar"></div></div>
+      <div class="focus-actions">
+        <button class="focus-btn done" onclick="focusMarkDone()">✓ Mark Done</button>
+        <button class="focus-btn exit" onclick="closeFocusMode()">Exit Focus</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DAILY REVIEW OVERLAY -->
+  <div class="modal-overlay" id="reviewOverlay" style="display:none;">
+    <div class="modal-box review-box">
+      <button class="modal-close" onclick="closeDailyReview()">✕</button>
+      <div id="reviewContent"></div>
+    </div>
+  </div>
+
+  <!-- TIME AUDIT OVERLAY -->
+  <div class="modal-overlay" id="auditOverlay" style="display:none;">
+    <div class="modal-box audit-box">
+      <div class="modal-header">
+        <div class="modal-title">⏱ Time Audit</div>
+        <button class="modal-close" onclick="closeTimeAudit()">✕</button>
+      </div>
+      <div id="auditContent" class="audit-scroll"></div>
+    </div>
+  </div>
+
+  <!-- ANALYTICS OVERLAY -->
+  <div class="modal-overlay" id="analyticsOverlay" style="display:none;">
+    <div class="modal-box analytics-box">
+      <div class="modal-header">
+        <div class="modal-title">📊 Analytics</div>
+        <button class="modal-close" onclick="closeAnalytics()">✕</button>
+      </div>
+      <div id="analyticsContent" class="analytics-scroll"></div>
+    </div>
+  </div>
+
+  <!-- IN-REMINDER OVERLAY -->
+  <div class="reminder-overlay" id="reminderOverlay" style="display:none;">
+    <div class="reminder-inner">
+      <div class="reminder-icon">🔔</div>
+      <div class="reminder-msg" id="reminderMsg">Reminder</div>
+      <button class="reminder-dismiss" onclick="dismissReminder()">Dismiss</button>
+    </div>
+  </div>
+
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <!-- FOCUS MODE OVERLAY -->
+  <div class="focus-overlay" id="focusOverlay" style="display:none;">
+    <div class="focus-inner">
+      <div class="focus-clock" id="focusClock"></div>
+      <div class="focus-task-label">Currently working on</div>
+      <div class="focus-task-name" id="focusTaskName"></div>
+      <span class="focus-imp-badge" id="focusImp"></span>
+      <div class="focus-countdown" id="focusCountdown">00:00</div>
+      <div class="focus-bar-wrap"><div class="focus-bar" id="focusBar"></div></div>
+      <div class="focus-actions">
+        <button class="focus-btn done" onclick="focusMarkDone()">✓ Mark Done</button>
+        <button class="focus-btn exit" onclick="closeFocusMode()">Exit Focus</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DAILY REVIEW OVERLAY -->
+  <div class="modal-overlay" id="reviewOverlay" style="display:none;">
+    <div class="modal-box review-box">
+      <button class="modal-close" onclick="closeDailyReview()">✕</button>
+      <div id="reviewContent"></div>
+    </div>
+  </div>
+
+  <!-- TIME AUDIT OVERLAY -->
+  <div class="modal-overlay" id="auditOverlay" style="display:none;">
+    <div class="modal-box audit-box">
+      <div class="modal-header">
+        <div class="modal-title">⏱ Time Audit</div>
+        <button class="modal-close" onclick="closeTimeAudit()">✕</button>
+      </div>
+      <div id="auditContent" class="audit-scroll"></div>
+    </div>
+  </div>
+
+  <!-- ANALYTICS OVERLAY -->
+  <div class="modal-overlay" id="analyticsOverlay" style="display:none;">
+    <div class="modal-box analytics-box">
+      <div class="modal-header">
+        <div class="modal-title">📊 Analytics</div>
+        <button class="modal-close" onclick="closeAnalytics()">✕</button>
+      </div>
+      <div id="analyticsContent" class="analytics-scroll"></div>
+    </div>
+  </div>
+
+  <!-- IN-REMINDER OVERLAY -->
+  <div class="reminder-overlay" id="reminderOverlay" style="display:none;">
+    <div class="reminder-inner">
+      <div class="reminder-icon">🔔</div>
+      <div class="reminder-msg" id="reminderMsg">Reminder</div>
+      <button class="reminder-dismiss" onclick="dismissReminder()">Dismiss</button>
+    </div>
+  </div>
+
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <script src="app.js"></script>
 <script>
