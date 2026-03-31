@@ -35,6 +35,9 @@
     <div class="date-badge" id="todayLabel"></div>
     <div class="spacer"></div>
     <button class="analytics-btn" onclick="openAnalytics()" title="Analytics">📊 Analytics</button>
+    <button class="analytics-btn" onclick="openWeekView()" title="Week view">📅 Week</button>
+    <button class="analytics-btn" onclick="openExamCountdown()" title="Exam mode">🎯 Exams</button>
+    <button class="analytics-btn" onclick="openTemplateManager()" title="Templates">📋 Templates</button>
     <div class="tab-group">
       <button class="tab-btn active" onclick="switchMain('tasks')">Tasks</button>
       <button class="tab-btn" onclick="switchMain('timeline')">Timeline</button>
@@ -49,6 +52,16 @@
     </div>
   </nav>
 
+  <!-- OVERDUE RADAR -->
+  <div class="overdue-radar" id="overdueRadar" style="display:none;"></div>
+
+  <!-- TIMEBOX BANNER -->
+  <div class="timebox-banner" id="timeboxBanner" style="display:none;">
+    <span class="timebox-icon">⏱</span>
+    <span id="timeboxInfo">Timebox active</span>
+    <button class="timebox-off" onclick="disableTimeboxMode()">✕ Exit timebox</button>
+  </div>
+
   <div class="app-body">
 
     <div class="panel" id="taskPanel">
@@ -58,9 +71,17 @@
         <div class="form-row"><label>Priority</label><select id="newTaskImp"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select></div>
         <div class="form-row"><label>Duration (min)</label><input type="number" id="newTaskDur" value="30" min="1" max="480" /></div>
         <div class="form-row"><label>Start time</label><input type="time" id="newTaskTime" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:'DM Sans',sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;" /></div>
+        <div class="form-row"><label>Subject</label><select id="newTaskSubject"><option value="">None</option><option value="chem">Chemistry</option><option value="bio">Biology</option><option value="math">Math</option><option value="physics">Physics</option><option value="robotics">Robotics</option><option value="english">English</option><option value="history">History</option><option value="fll">FLL</option><option value="scioly">Sci Oly</option><option value="other">Other</option></select></div>
+        <div class="form-row"><label>Reminder (min before)</label><input type="number" id="newTaskReminder" value="0" min="0" max="120" /></div>
         <button class="btn" onclick="addTask()">+ Add Task</button>
       </div>
       <div class="section-title">Today's Tasks</div>
+      <div class="task-actions-bar">
+        <button class="bar-btn" onclick="openKanban()">⬛ Kanban</button>
+        <button class="bar-btn" onclick="smartSchedule()">✨ Auto-schedule</button>
+        <button class="bar-btn" onclick="archiveCheckedTasks()">📦 Archive done</button>
+        <button class="bar-btn" onclick="openArchive()">🗂 Archive</button>
+      </div>
       <div class="task-list" id="taskList"><div class="empty-state">No tasks yet. Add one above!</div></div>
       <div class="sep"></div>
       <div class="section-title">Deadlines</div>
@@ -68,6 +89,7 @@
         <input type="text" id="newDlName" placeholder="Deadline name..." />
         <div class="form-row"><label>Criticality</label><select id="newDlImp"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select></div>
         <div class="form-row"><label>Due date</label><input type="date" id="newDlDate" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:'DM Sans',sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;" /></div>
+        <div class="form-row"><label>Is Exam?</label><input type="checkbox" id="newDlIsExam" style="accent-color:var(--accent);" /> <span style="font-size:12px;color:var(--text2);">Mark as exam for countdown</span></div>
         <button class="btn" onclick="addDeadline()">+ Add Deadline</button>
       </div>
       <div class="deadline-list" id="deadlineList"><div class="empty-state">No deadlines yet.</div></div>
@@ -93,6 +115,9 @@
       </div>
       <div class="cal-grid" id="calGrid"></div>
       <div class="day-detail" id="dayDetail" style="display:none;"><h3 id="dayDetailTitle"></h3><div id="dayDetailItems"></div></div>
+      <div class="sep"></div>
+      <div class="section-title">Next 7 Days</div>
+      <div class="mini-agenda" id="miniAgenda"></div>
       <div class="sep"></div>
       <div class="section-title">Events</div>
       <button class="toggle-btn" onclick="toggleEventForm()">+ Add Event</button>
@@ -137,6 +162,7 @@
       <!-- TOP: Giant clock -->
       <div class="cm-time" id="cmTime">12:00<span class="cm-ampm" id="cmAmpm">AM</span></div>
       <div class="cm-date" id="cmDate"></div>
+      <div class="cm-next-ticker" id="cmNextTicker" style="display:none;"></div>
 
       <!-- DEADLINES STRIP: compact pills row under clock -->
       <div class="cm-deadline-strip" id="cmDeadlineStrip"></div>
@@ -208,6 +234,35 @@
       <button class="alarm-ring-snooze" onclick="snoozeAlarm()">Snooze 5 min</button>
     </div>
 
+
+    <!-- KANBAN OVERLAY -->
+    <div class="full-overlay" id="kanbanOverlay" style="display:none;">
+      <div class="full-overlay-inner">
+        <div class="full-overlay-header">
+          <h2 class="serif">Kanban Board</h2>
+          <button class="overlay-close-btn" onclick="closeKanban()">✕</button>
+        </div>
+        <div class="kanban-board" id="kanbanBoard"></div>
+      </div>
+    </div>
+
+    <!-- ARCHIVE OVERLAY -->
+    <div class="full-overlay" id="archiveOverlay" style="display:none;">
+      <div class="full-overlay-inner">
+        <div class="full-overlay-header">
+          <h2 class="serif">Archived Tasks</h2>
+          <div style="display:flex;gap:8px;">
+            <button class="bar-btn" onclick="clearArchive()">🗑 Clear all</button>
+            <button class="overlay-close-btn" onclick="closeArchive()">✕</button>
+          </div>
+        </div>
+        <div id="archiveList"></div>
+      </div>
+    </div>
+
+    <!-- CONFETTI CANVAS -->
+    <canvas id="confettiCanvas" style="position:fixed;inset:0;pointer-events:none;z-index:99998;display:none;"></canvas>
+
   </div><!-- end app-body -->
 </div>
 
@@ -276,6 +331,43 @@
         <button class="modal-close" onclick="closeAnalytics()">✕</button>
       </div>
       <div id="analyticsContent" class="analytics-scroll"></div>
+    </div>
+  </div>
+
+  <!-- TEMPLATE MANAGER -->
+  <div class="modal-overlay" id="templateOverlay" style="display:none;">
+    <div class="modal-box" style="max-width:560px;">
+      <div class="modal-header">
+        <div class="modal-title">📋 Task Templates</div>
+        <button class="modal-close" onclick="closeTemplateManager()">✕</button>
+      </div>
+      <div id="templateContent" style="overflow-y:auto;max-height:70vh;padding:16px 24px 24px;"></div>
+    </div>
+  </div>
+
+  <!-- WEEK VIEW -->
+  <div class="modal-overlay" id="weekViewOverlay" style="display:none;padding:0;">
+    <div class="modal-box" style="max-width:98vw;width:98vw;max-height:94vh;height:94vh;border-radius:12px;">
+      <div class="modal-header" style="padding:14px 20px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button class="cal-nav-btn" onclick="weekViewPrev()">&#8249;</button>
+          <div class="modal-title" id="weekViewLabel" style="font-size:16px;"></div>
+          <button class="cal-nav-btn" onclick="weekViewNext()">&#8250;</button>
+        </div>
+        <button class="modal-close" onclick="closeWeekView()">✕</button>
+      </div>
+      <div id="weekViewContent" style="overflow:auto;flex:1;padding:0 8px 8px;"></div>
+    </div>
+  </div>
+
+  <!-- EXAM COUNTDOWN -->
+  <div class="modal-overlay" id="examOverlay" style="display:none;">
+    <div class="modal-box" style="max-width:500px;">
+      <div class="modal-header">
+        <div class="modal-title">🎯 Exam Countdown</div>
+        <button class="modal-close" onclick="closeExamCountdown()">✕</button>
+      </div>
+      <div id="examContent" style="overflow-y:auto;max-height:70vh;padding:16px 24px 24px;"></div>
     </div>
   </div>
 

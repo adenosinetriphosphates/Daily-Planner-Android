@@ -7,6 +7,10 @@ let deadlines = [];
 let db = null;
 let syncEnabled = false;
 let audioCtx = null;
+let templates = JSON.parse(localStorage.getItem('dp_templates') || '[]');
+let heatmapData = JSON.parse(localStorage.getItem('dp_heatmap') || '{}');
+let timeboxMode = false, timeboxInterval = null;
+let weekViewDate = null;
 
 const firebaseConfig = {
   apiKey: "AIzaSyBK9sjOnHmeoRqHz6sz31wYSClKYjKZYyQ",
@@ -65,7 +69,8 @@ async function syncLoad() {
         Object.keys(timers).forEach(id => {
           if (!tasks.find(t => t.id === id)) { clearInterval(timers[id]); delete timers[id]; }
         });
-        renderTasks(); renderEventList(); renderCalendar(); renderTimeline(); renderDeadlines();
+        resetRecurringTasks();
+  renderTasks(); renderEventList(); renderCalendar(); renderTimeline(); renderDeadlines();
       }
     });
   } catch(e) {
@@ -75,15 +80,19 @@ async function syncLoad() {
   }
 }
 
+let _saveTimer = null;
 async function syncSave() {
-  localStorage.setItem('dp_tasks',     JSON.stringify(tasks));
-  localStorage.setItem('dp_events',    JSON.stringify(events));
+  localStorage.setItem('dp_tasks', JSON.stringify(tasks));
+  localStorage.setItem('dp_events', JSON.stringify(events));
   localStorage.setItem('dp_deadlines', JSON.stringify(deadlines));
   if (!syncEnabled || !db) return;
-  try {
-    await db.collection('planner').doc('data').set({ tasks, events, deadlines, updated: Date.now() });
-    showSyncStatus('synced');
-  } catch(e) { showSyncStatus('error'); }
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(async () => {
+    try {
+      await db.collection('planner').doc('data').set({ tasks, events, deadlines, updated: Date.now() });
+      showSyncStatus('synced');
+    } catch(e) { showSyncStatus('error'); }
+  }, 5000);
 }
 
 function showSyncStatus(state) {
@@ -92,6 +101,25 @@ function showSyncStatus(state) {
   if (state === 'synced')  { el.textContent = '☁ Synced';   el.style.color = 'rgba(255,255,255,0.75)'; }
   if (state === 'offline') { el.textContent = '⚠ Offline';  el.style.color = '#F1C40F'; }
   if (state === 'error')   { el.textContent = '✕ Sync err'; el.style.color = '#E74C3C'; }
+}
+
+
+const SUBJECTS = {
+  'chem':     { label:'Chemistry',    color:'#E67E22', bg:'#FEF5EC' },
+  'bio':      { label:'Biology',      color:'#27AE60', bg:'#EAFAF1' },
+  'math':     { label:'Math',         color:'#2980B9', bg:'#EBF5FB' },
+  'physics':  { label:'Physics',      color:'#8E44AD', bg:'#F5EEF8' },
+  'robotics': { label:'Robotics',     color:'#16A085', bg:'#E8F8F5' },
+  'english':  { label:'English',      color:'#C0392B', bg:'#FDEDEC' },
+  'history':  { label:'History',      color:'#795548', bg:'#EFEBE9' },
+  'fll':      { label:'FLL',          color:'#1ABC9C', bg:'#E8F8F5' },
+  'scioly':   { label:'Sci Oly',      color:'#F39C12', bg:'#FEF9E7' },
+  'other':    { label:'Other',        color:'#7F8C8D', bg:'#F2F3F4' },
+};
+function subjectBadge(sub) {
+  const s = SUBJECTS[sub];
+  if (!s) return '';
+  return '<span class="subject-badge" style="background:'+s.bg+';color:'+s.color+';border-color:'+s.color+'40;">'+s.label+'</span>';
 }
 
 // ── UTILS ──
@@ -129,10 +157,15 @@ function addTask() {
   if (!name) return;
   tasks.push({
     id: uid(), name,
+    subject: document.getElementById('newTaskSubject')?.value || '',
     importance: document.getElementById('newTaskImp').value,
     duration: parseInt(document.getElementById('newTaskDur').value)||30,
     startTime: document.getElementById('newTaskTime').value||'',
-    elapsed:0, running:false, done:false, checked:false
+    elapsed:0, running:false, done:false, checked:false,
+    subtasks:[], notes:'', blockedBy:[], recurring:null,
+    reminder: parseInt(document.getElementById('newTaskReminder')?.value||'0')||0,
+    subject: document.getElementById('newTaskSubject')?.value||'',
+    isExam: false,
   });
   save();
   document.getElementById('newTaskName').value = '';
@@ -144,7 +177,9 @@ function toggleTaskChecked(id) {
   if (!task) return;
   task.checked = !task.checked;
   if (task.checked && task.running) stopTimer(id);
-  save(); renderTasks(); renderTimeline();
+  if (task.checked && (task.importance === 'critical' || task.importance === 'high')) burstConfetti();
+  updateHeatmap();
+  save(); renderTasks(); renderTimeline(); renderOverdueRadar();
 }
 
 function deleteTask(id) {
@@ -161,8 +196,8 @@ function startTimer(id) {
     const t = tasks.find(t => t.id === id);
     if (!t) { clearInterval(timers[id]); return; }
     t.elapsed = (t.elapsed||0) + 1;
-    if (t.elapsed >= t.duration*60) {
-      t.running = false; clearInterval(timers[id]); delete timers[id]; playTaskEndSound();
+    if (t.elapsed === t.duration*60) {
+      playTaskEndSound(); // ding but keep running — overtime mode
     }
     save(); updateTaskCard(id);
   }, 1000);
@@ -194,11 +229,24 @@ function updateTaskCard(id) {
   const display = el.querySelector('.timer-display');
   const remaining = Math.max(total-elapsed, 0);
   if (bar)     { bar.style.width = (pct*100)+'%'; bar.style.background = timerColor(pct); }
-  if (display) { display.textContent = task.running ? 'Remaining: '+fmtTime(remaining) : (elapsed>0?'Elapsed: '+fmtTime(elapsed):fmtTime(total)+' total'); }
+  const overtime = elapsed > total;
+  if (display) {
+    if (task.running && overtime) {
+      display.textContent = '+' + fmtTime(elapsed - total) + ' overtime';
+      display.style.color = '#E74C3C';
+    } else if (task.running) {
+      display.textContent = 'Remaining: ' + fmtTime(remaining);
+      display.style.color = '';
+    } else {
+      display.textContent = elapsed>0 ? 'Elapsed: '+fmtTime(elapsed) : fmtTime(total)+' total';
+      display.style.color = '';
+    }
+  }
   const sb = el.querySelector('.start-btn'); const pb = el.querySelector('.stop-btn');
   if (sb) sb.style.display = task.running ? 'none' : '';
   if (pb) pb.style.display = task.running ? '' : 'none';
   el.classList.toggle('running', task.running);
+  el.classList.toggle('task-glow', task.running);
 }
 
 function toggleEditTask(id) { document.getElementById('editForm_'+id)?.classList.toggle('open'); }
@@ -210,6 +258,10 @@ function saveEditTask(id) {
   task.importance = document.getElementById('editImp_'+id).value;
   task.duration   = parseInt(document.getElementById('editDur_'+id).value)||task.duration;
   task.startTime  = document.getElementById('editTime_'+id).value;
+  const subEl = document.getElementById('editSubject_'+id);
+  if (subEl) task.subject = subEl.value;
+  const exEl = document.getElementById('editIsExam_'+id);
+  if (exEl) task.isExam = exEl.checked;
   task.elapsed = 0; stopTimer(id); save();
   renderTasks(); renderCalendar(); renderTimeline();
 }
@@ -225,7 +277,12 @@ function renderTasks() {
     const total=task.duration*60, elapsed=task.elapsed||0;
     const pct=Math.min(elapsed/total,1), remaining=Math.max(total-elapsed,0);
     const td = task.running ? 'Remaining: '+fmtTime(remaining) : (elapsed>0?'Elapsed: '+fmtTime(elapsed):fmtTime(total)+' total');
-    const checkedClass = task.checked ? ' task-checked' : '';
+    const now = new Date();
+    const todayMins = now.getHours()*60+now.getMinutes();
+    const isPastDue = !task.checked && !task.running && task.startTime && (()=>{
+      const [h,m]=task.startTime.split(':').map(Number); return h*60+m < todayMins;
+    })();
+    const checkedClass = task.checked ? ' task-checked' : (isPastDue ? ' task-past-due' : '');
     return '<div class="task-card' + (task.running?' running':'') + checkedClass + '" id="task_' + task.id + '">' +
       '<div class="task-header">' +
         '<button class="task-check-btn' + (task.checked?' checked':'') + '" onclick="toggleTaskChecked(\''+ task.id +'\')" title="' + (task.checked?'Mark incomplete':'Mark complete') + '">' +
@@ -233,9 +290,17 @@ function renderTasks() {
         '</button>' +
         '<div class="task-name' + (task.checked?' done-text':'') + '">' + escHtml(task.name) + '</div>' +
         '<span class="importance-badge ' + impClass(task.importance) + '">' + impLabel(task.importance) + '</span>' +
+        subjectBadge(task.subject||'') +
+        (task.isExam ? '<span class="exam-flag-badge">📋 Exam</span>' : '') +
       '</div>' +
       (!task.checked ? (
-        '<div class="task-meta"><span>⏱ ' + task.duration + ' min</span>' + (task.startTime?'<span>🕐 '+task.startTime+'</span>':'') + '</div>' +
+        // dependency blocked?
+        (()=>{
+          const blockedBy = (task.blockedBy||[]).map(bid=>tasks.find(t=>t.id===bid)).filter(Boolean).filter(t=>!t.checked);
+          if(blockedBy.length) return '<div class="task-blocked-banner">🔒 Blocked by: ' + blockedBy.map(t=>escHtml(t.name)).join(', ') + '</div>';
+          return '';
+        })() +
+        '<div class="task-meta"><span>⏱ ' + task.duration + ' min</span>' + (task.startTime?'<span>🕐 '+task.startTime+'</span>':'') + (task.recurring?'<span class="task-recurring-badge">↻ '+task.recurring+'</span>':'') + '</div>' +
         '<div class="timer-bar-wrap"><div class="timer-bar" style="width:' + (pct*100) + '%;background:' + timerColor(pct) + ';"></div></div>' +
         '<div class="timer-display">' + td + '</div>' +
         '<div class="task-actions">' +
@@ -255,9 +320,42 @@ function renderTasks() {
           '</select>' +
           '<div class="form-row"><label>Duration (min)</label><input type="number" id="editDur_' + task.id + '" value="' + task.duration + '" min="1" max="480" /></div>' +
           '<div class="form-row"><label>Start time</label><input type="time" id="editTime_' + task.id + '" value="' + (task.startTime||'') + '" style="flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;" /></div>' +
+          '<div class="form-row"><label>Subject</label>' +
+          '<select id="editSubject_' + task.id + '">' +
+            Object.entries(SUBJECTS).map(([k,v]) => '<option value="'+k+'"'+(task.subject===k?' selected':'')+'>'+v.label+'</option>').join('') +
+            '<option value=""'+((!task.subject)?' selected':'')+'>None</option>' +
+          '</select></div>' +
+          '<div class="form-row"><label>Is Exam?</label><input type="checkbox" id="editIsExam_' + task.id + '" '+(task.isExam?'checked':'')+' style="accent-color:var(--accent);" /></div>' +
           '<div class="edit-actions">' +
             '<button class="btn" style="font-size:12px;padding:6px 10px;" onclick="saveEditTask(\''+ task.id +'\')">Save</button>' +
             '<button class="btn secondary" style="font-size:12px;padding:6px 10px;" onclick="toggleEditTask(\''+ task.id +'\')">Cancel</button>' +
+          '</div>' +
+        '</div>' +
+        // Notes section
+        '<div class="task-notes-wrap">' +
+          '<button class="task-notes-toggle" onclick="toggleTaskNotes(\''+ task.id +'\')">' + (task.notes ? '📝 Note ▸' : '+ Note') + '</button>' +
+          '<div class="task-notes-body" id="notes_' + task.id + '" style="display:' + (task.notes?'block':'none') + ';">' +
+            '<textarea class="task-notes-area" placeholder="Context, links, instructions…" oninput="saveTaskNote(\''+ task.id +'\',this.value)">' + escHtml(task.notes||'') + '</textarea>' +
+          '</div>' +
+        '</div>' +
+        // Subtasks section
+        '<div class="task-subtasks-wrap">' +
+          ((task.subtasks&&task.subtasks.length) ? (
+            '<div class="subtask-progress-bar-wrap"><div class="subtask-progress-bar" style="width:' +
+              Math.round(task.subtasks.filter(s=>s.done).length/task.subtasks.length*100) + '%;"></div></div>' +
+            '<div class="subtask-list">' +
+              task.subtasks.map(s =>
+                '<div class="subtask-row">' +
+                  '<button class="subtask-check' + (s.done?' done':'') + '" onclick="toggleSubtask(\''+ task.id +'\',\''+ s.id +'\')">' + (s.done?'✓':'') + '</button>' +
+                  '<span class="subtask-name' + (s.done?' done-text':'') + '">' + escHtml(s.name) + '</span>' +
+                  '<button class="subtask-del" onclick="deleteSubtask(\''+ task.id +'\',\''+ s.id +'\')">✕</button>' +
+                '</div>'
+              ).join('') +
+            '</div>'
+          ) : '') +
+          '<div class="subtask-add-row">' +
+            '<input type="text" class="subtask-input" id="sti_'+ task.id +'" placeholder="Add subtask…" onkeydown="subtaskKeydown(event,\''+ task.id +'\')" />' +
+            '<button class="subtask-add-btn" onclick="addSubtask(\''+ task.id +'\')">+</button>' +
           '</div>' +
         '</div>'
       ) : (
@@ -458,8 +556,190 @@ function renderDeadlines() {
   list.innerHTML = html || '<div class="empty-state">No upcoming deadlines.</div>';
 }
 
+
+// ── MINI AGENDA ──
+function renderMiniAgenda() {
+  const el = document.getElementById('miniAgenda');
+  if (!el) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const rows = [];
+  for (let i = 0; i <= 7; i++) {
+    const d = new Date(today); d.setDate(d.getDate()+i);
+    const ds = toDateStr(d);
+    const dayTasks = tasks.filter(t => t.startTime && !t.checked);
+    const dayEvents = events.filter(e => eventOccursOn(e, d));
+    const dayDl = deadlines.filter(dl => dl.date === ds && !dl.checked);
+    if (!dayTasks.length && !dayEvents.length && !dayDl.length) continue;
+    const label = i===0?'Today':i===1?'Tomorrow':DAYS[d.getDay()]+' '+(d.getMonth()+1)+'/'+d.getDate();
+    rows.push('<div class="agenda-day-header">'+label+'</div>');
+    dayDl.forEach(dl => {
+      const cd = deadlineCountdown(dl.date);
+      rows.push('<div class="agenda-row agenda-dl"><span class="agenda-dot" style="background:#E74C3C;"></span><span class="agenda-name">📅 '+escHtml(dl.name)+'</span><span class="agenda-time '+cd.cls+'">'+cd.label+'</span></div>');
+    });
+    dayEvents.sort((a,b)=>(a.time||'').localeCompare(b.time||'')).forEach(ev => {
+      rows.push('<div class="agenda-row"><span class="agenda-dot" style="background:#8E44AD;"></span><span class="agenda-name">'+escHtml(ev.name)+'</span>'+(ev.time?'<span class="agenda-time">'+ev.time+'</span>':'')+'</div>');
+    });
+    if (i===0) {
+      dayTasks.sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')).forEach(t => {
+        rows.push('<div class="agenda-row"><span class="agenda-dot" style="background:var(--accent2);"></span><span class="agenda-name">'+escHtml(t.name)+'</span>'+(t.startTime?'<span class="agenda-time">'+t.startTime+'</span>':'')+'</div>');
+      });
+    }
+  }
+  el.innerHTML = rows.length ? rows.join('') : '<div class="empty-state">Nothing in the next 7 days.</div>';
+}
+
+
+// ── KANBAN BOARD ──
+let kanbanOpen = false;
+const KANBAN_COLS = [
+  { id:'todo',       label:'To Do',       color:'#7F8C8D' },
+  { id:'inprogress', label:'In Progress', color:'#E67E22' },
+  { id:'done',       label:'Done',        color:'#27AE60' },
+];
+
+function openKanban() {
+  kanbanOpen = true;
+  document.getElementById('kanbanOverlay').style.display = 'flex';
+  renderKanban();
+}
+function closeKanban() {
+  kanbanOpen = false;
+  document.getElementById('kanbanOverlay').style.display = 'none';
+}
+function kanbanCol(t) {
+  if (t.checked) return 'done';
+  if (t.running || (t.elapsed||0)>0) return 'inprogress';
+  return t.kanban || 'todo';
+}
+function setKanban(id, col) {
+  const t = tasks.find(t=>t.id===id); if(!t) return;
+  t.kanban = col;
+  if (col === 'done' && !t.checked) { t.checked = true; if(t.running) stopTimer(id); if(t.importance==='critical'||t.importance==='high') burstConfetti(); updateHeatmap(); }
+  if (col !== 'done') t.checked = false;
+  save(); renderKanban(); renderTasks();
+}
+function renderKanban() {
+  const board = document.getElementById('kanbanBoard');
+  if (!board) return;
+  board.innerHTML = KANBAN_COLS.map(col => {
+    const colTasks = tasks.filter(t => kanbanCol(t) === col.id);
+    return '<div class="kb-col">'+
+      '<div class="kb-col-header" style="border-color:'+col.color+'">'+
+        '<span class="kb-col-title">'+col.label+'</span>'+
+        '<span class="kb-col-count" style="background:'+col.color+'">'+colTasks.length+'</span>'+
+      '</div>'+
+      '<div class="kb-cards" id="kbcol_'+col.id+'" ondragover="event.preventDefault()" ondrop="kanbanDrop(event,\''+col.id+'\')">'+ 
+        (colTasks.length ? colTasks.map(t =>
+          '<div class="kb-card" draggable="true" ondragstart="kanbanDragStart(event,\''+t.id+'\')" id="kbc_'+t.id+'">'+
+            '<div class="kb-card-name">'+escHtml(t.name)+'</div>'+
+            '<div class="kb-card-meta">'+
+              '<span class="importance-badge '+impClass(t.importance)+'" style="font-size:9px;padding:1px 5px;">'+impLabel(t.importance)+'</span>'+
+              (t.subject ? '<span class="subject-badge" style="font-size:9px;padding:1px 5px;background:'+((SUBJECTS[t.subject]||{}).bg||'#eee')+';color:'+((SUBJECTS[t.subject]||{}).color||'#333')+';border-color:'+((SUBJECTS[t.subject]||{}).color||'#ccc')+'40;">'+((SUBJECTS[t.subject]||{}).label||t.subject)+'</span>' : '')+
+            '</div>'+
+            '<div class="kb-card-actions">'+
+              KANBAN_COLS.filter(c=>c.id!==col.id).map(c =>
+                '<button class="kb-move-btn" onclick="setKanban(\''+t.id+'\',\''+c.id+'\')">→ '+c.label+'</button>'
+              ).join('')+
+            '</div>'+
+          '</div>'
+        ).join('') : '<div class="kb-empty">Drop tasks here</div>')+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+let _kanbanDragId = null;
+function kanbanDragStart(e, id) { _kanbanDragId = id; e.dataTransfer.effectAllowed = 'move'; }
+function kanbanDrop(e, col) { e.preventDefault(); if(_kanbanDragId) { setKanban(_kanbanDragId, col); _kanbanDragId=null; } }
+
+
+// ── ARCHIVE ──
+let archivedTasks = JSON.parse(localStorage.getItem('dp_archive')||'[]');
+function saveArchive() { localStorage.setItem('dp_archive', JSON.stringify(archivedTasks)); }
+function archiveCheckedTasks() {
+  const toArchive = tasks.filter(t => t.checked);
+  if (!toArchive.length) { showToast('No completed tasks to archive'); return; }
+  toArchive.forEach(t => archivedTasks.unshift({ ...t, archivedAt: Date.now() }));
+  tasks = tasks.filter(t => !t.checked);
+  saveArchive(); save(); renderTasks();
+  showToast('Archived ' + toArchive.length + ' task(s)');
+}
+function openArchive() { renderArchivePanel(); document.getElementById('archiveOverlay').style.display='flex'; }
+function closeArchive() { document.getElementById('archiveOverlay').style.display='none'; }
+function restoreFromArchive(id) {
+  const t = archivedTasks.find(t=>t.id===id); if(!t) return;
+  t.checked=false; t.elapsed=0; t.running=false;
+  tasks.push(t); archivedTasks = archivedTasks.filter(a=>a.id!==id);
+  saveArchive(); save(); renderTasks(); renderArchivePanel();
+  showToast('Restored: '+t.name);
+}
+function deleteFromArchive(id) {
+  archivedTasks = archivedTasks.filter(a=>a.id!==id);
+  saveArchive(); renderArchivePanel();
+}
+function clearArchive() {
+  if (!confirm('Clear all archived tasks?')) return;
+  archivedTasks = []; saveArchive(); renderArchivePanel();
+}
+function renderArchivePanel() {
+  const el = document.getElementById('archiveList'); if(!el) return;
+  if (!archivedTasks.length) { el.innerHTML='<div class="empty-state">No archived tasks.</div>'; return; }
+  el.innerHTML = archivedTasks.map(t => {
+    const d = new Date(t.archivedAt||0);
+    const ds = d.toLocaleDateString();
+    return '<div class="archive-card">'+
+      '<div class="archive-name">'+escHtml(t.name)+'</div>'+
+      '<div class="archive-meta">'+ds+' · '+t.duration+'min · <span class="importance-badge '+impClass(t.importance)+'">'+impLabel(t.importance)+'</span>'+
+        (t.subject&&SUBJECTS[t.subject]?' · <span class="subject-badge" style="font-size:9px;background:'+SUBJECTS[t.subject].bg+';color:'+SUBJECTS[t.subject].color+'">'+SUBJECTS[t.subject].label+'</span>':'')+'</div>'+
+      '<div class="archive-actions">'+
+        '<button class="icon-btn" onclick="restoreFromArchive(\''+t.id+'\')" style="font-size:11px;">↩ Restore</button>'+
+        '<button class="icon-btn del-btn" onclick="deleteFromArchive(\''+t.id+'\')" style="font-size:11px;">✕</button>'+
+      '</div></div>';
+  }).join('');
+}
+
+
+// ── SMART SCHEDULING ──
+function smartSchedule() {
+  const unscheduled = tasks.filter(t => !t.startTime && !t.checked);
+  if (!unscheduled.length) { showToast('All tasks already scheduled'); return; }
+  const today = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  // Collect occupied slots today
+  const occupied = [];
+  tasks.filter(t => t.startTime).forEach(t => {
+    const [h,m] = t.startTime.split(':').map(Number);
+    occupied.push({ start: h*60+m, end: h*60+m+t.duration });
+  });
+  events.filter(e => eventOccursOn(e, today) && e.time).forEach(e => {
+    const [h,m] = e.time.split(':').map(Number);
+    occupied.push({ start: h*60+m, end: h*60+m+e.duration });
+  });
+  occupied.sort((a,b) => a.start-b.start);
+
+  // Find free slots between 8am and 10pm
+  let cursor = Math.max(today.getHours()*60+today.getMinutes()+5, 8*60);
+  let scheduled = 0;
+  for (const t of unscheduled) {
+    // Advance past any occupied slot
+    let tries = 0;
+    while (tries++ < 200) {
+      const clash = occupied.find(o => cursor < o.end && cursor+t.duration > o.start);
+      if (!clash) break;
+      cursor = clash.end + 5;
+    }
+    if (cursor + t.duration > 22*60) break; // past 10pm, stop
+    t.startTime = pad(Math.floor(cursor/60)) + ':' + pad(cursor%60);
+    occupied.push({ start: cursor, end: cursor+t.duration });
+    occupied.sort((a,b)=>a.start-b.start);
+    cursor += t.duration + 10; // 10 min buffer
+    scheduled++;
+  }
+  save(); renderTasks(); renderTimeline();
+  showToast('Scheduled ' + scheduled + ' task(s) into free slots');
+}
+
 // ── CALENDAR ──
-function renderCalendar() {
+function renderCalendar() { renderMiniAgenda();
   document.getElementById('calMonthLabel').textContent = MONTHS[calDate.getMonth()]+' '+calDate.getFullYear();
   const grid=document.getElementById('calGrid');
   const today=new Date();
@@ -542,6 +822,17 @@ function renderTimeline() {
   const nowPx = (nowMins/60)*HOUR_HEIGHT;
   const nowLine = '<div class="tl24-now-line" style="top:'+nowPx+'px;"><div class="tl24-now-dot"></div></div>';
 
+  // Inject today's time blocks as background shading
+  const todayStr = toDateStr(today);
+  let blocksBg = '';
+  timeBlocks.filter(b => !b.date || b.date === todayStr).forEach(b => {
+    const top = (b.startMins / 60) * HOUR_HEIGHT;
+    const height = Math.max(((b.endMins - b.startMins) / 60) * HOUR_HEIGHT, 20);
+    blocksBg += '<div class="tl24-block-bg" style="top:' + top + 'px;height:' + height + 'px;">' +
+      '<div class="tl24-block-bg-label">' + escHtml(b.label) + '</div>' +
+    '</div>';
+  });
+
   // Sort items by start time
   allItems.sort((a,b)=>a.hour*60+a.min-(b.hour*60+b.min));
 
@@ -587,7 +878,7 @@ function renderTimeline() {
   });
 
   tlDiv.innerHTML = '<div class="tl24-container" style="height:'+TOTAL_HEIGHT+'px;">' +
-    hoursHtml + nowLine + blocksHtml +
+    hoursHtml + blocksBg + nowLine + blocksHtml +
   '</div>';
 
   // Scroll to current time minus 1 hour
@@ -640,6 +931,42 @@ function renderWeather(cache) {
   if(me&&tm) me.innerHTML=card('Tomorrow',tm.temperature_2m_max,tm.temperature_2m_min,'Low',tm.wind_speed_10m_max,'Max wind',tm.wind_speed_10m_max,'Wind',tm.precipitation_sum||0,tm.weather_code,'');
 }
 
+
+function burstConfetti() {
+  const canvas = document.getElementById('confettiCanvas');
+  if (!canvas) return;
+  canvas.style.display = 'block';
+  const ctx = canvas.getContext('2d');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  const pieces = Array.from({length:120}, () => ({
+    x: Math.random()*canvas.width,
+    y: Math.random()*canvas.height*0.4,
+    r: Math.random()*6+3,
+    d: Math.random()*120,
+    color: ['#52e89e','#2D6A4F','#F1C40F','#E67E22','#8E44AD','#3498DB'][Math.floor(Math.random()*6)],
+    tilt: Math.random()*10-10,
+    speed: Math.random()*3+1,
+    opacity: 1,
+  }));
+  let frame = 0;
+  function draw() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    pieces.forEach(p => {
+      p.y += p.speed; p.tilt += 0.1; p.opacity -= 0.008;
+      ctx.save(); ctx.globalAlpha = Math.max(0,p.opacity);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, p.r, p.r*0.4, p.tilt, 0, Math.PI*2);
+      ctx.fill(); ctx.restore();
+    });
+    frame++;
+    if (frame < 120) requestAnimationFrame(draw);
+    else { ctx.clearRect(0,0,canvas.width,canvas.height); canvas.style.display='none'; }
+  }
+  draw();
+}
+
 // ── SOUNDS ──
 function playTaskEndSound() {
   try {
@@ -668,6 +995,65 @@ function playDeadlineWarningSound(criticality) {
       const start=now+i*cfg.interval;gain.gain.setValueAtTime(cfg.gain,start);gain.gain.exponentialRampToValueAtTime(0.001,start+0.35);osc.start(start);osc.stop(start+0.4);
     });
   } catch(e){}
+}
+
+
+// ── PER-TASK REMINDERS ──
+let firedReminders = new Set(JSON.parse(sessionStorage.getItem('dp_remfired')||'[]'));
+function checkPerTaskReminders(now) {
+  const pad = n => String(n).padStart(2,'0');
+  tasks.forEach(t => {
+    if (!t.startTime || !t.reminder || t.checked || t.running) return;
+    const [h,m] = t.startTime.split(':').map(Number);
+    const startMins = h*60+m;
+    const nowMins = now.getHours()*60+now.getMinutes();
+    const diff = startMins - nowMins;
+    if (diff === parseInt(t.reminder) && now.getSeconds() < 5) {
+      const key = t.id + '_' + toDateStr(now);
+      if (!firedReminders.has(key)) {
+        firedReminders.add(key);
+        sessionStorage.setItem('dp_remfired', JSON.stringify([...firedReminders]));
+        showToast('⏰ Starting in ' + t.reminder + ' min: ' + t.name);
+        if (Notification.permission === 'granted') {
+          new Notification('Starting soon', { body: t.name + ' starts in ' + t.reminder + ' min', icon: './icon-192.png' });
+        }
+      }
+    }
+  });
+}
+
+function showToast(msg) {
+  let toast = document.getElementById('globalToast');
+  if (!toast) { toast = document.createElement('div'); toast.id='globalToast'; document.body.appendChild(toast); }
+  toast.textContent = msg;
+  toast.className = 'global-toast show';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toast.classList.remove('show'), 4000);
+}
+
+
+let morningDigestFired = sessionStorage.getItem('dp_digest') === new Date().toDateString();
+function checkMorningDigest(now) {
+  if (morningDigestFired) return;
+  if (now.getHours() === 8 && now.getMinutes() === 0 && now.getSeconds() < 5) {
+    morningDigestFired = true;
+    sessionStorage.setItem('dp_digest', now.toDateString());
+    const todayStr = toDateStr(now);
+    const tmrw = new Date(now); tmrw.setDate(tmrw.getDate()+1);
+    const tmrwStr = toDateStr(tmrw);
+    const todayDl = deadlines.filter(d => !d.checked && d.date === todayStr);
+    const tmrwDl  = deadlines.filter(d => !d.checked && d.date === tmrwStr);
+    const todayEv = events.filter(e => eventOccursOn(e, now));
+    let msg = '🌅 Good morning! ';
+    if (todayDl.length) msg += todayDl.length + ' deadline(s) due today. ';
+    if (tmrwDl.length)  msg += tmrwDl.length + ' due tomorrow. ';
+    if (todayEv.length) msg += todayEv.length + ' event(s) today.';
+    if (!todayDl.length && !tmrwDl.length && !todayEv.length) msg += 'Clear schedule today!';
+    showToast(msg);
+    if (Notification.permission === 'granted') {
+      new Notification('Daily Planner — Morning Digest', { body: msg, icon: './icon-192.png' });
+    }
+  }
 }
 
 // ── DEADLINE WARNINGS ──
@@ -817,8 +1203,34 @@ function updateClockMode() {
     }
   }
 
+  // ── Countdown tiles (top deadlines) ──
+  const tilesEl = document.getElementById('cmCountdownTiles');
+  if (tilesEl) {
+    const today2 = new Date(); today2.setHours(0,0,0,0);
+    const topDl = [...deadlines].filter(d => !d.checked)
+      .sort((a,b) => a.date.localeCompare(b.date)).slice(0, 4);
+    if (topDl.length) {
+      tilesEl.innerHTML = topDl.map(dl => {
+        const due = new Date(dl.date + 'T00:00:00');
+        const diff = Math.round((due - today2) / 86400000);
+        let cls = diff < 0 ? 'ct-overdue' : diff === 0 ? 'ct-today' : diff <= 3 ? 'ct-soon' : 'ct-upcoming';
+        let label = diff < 0 ? Math.abs(diff) + 'd overdue' : diff === 0 ? 'TODAY' : diff + ' days';
+        return '<div class="countdown-tile ' + cls + '">' +
+          '<div class="ct-days">' + (diff < 0 ? '-' : '') + Math.abs(diff) + '</div>' +
+          '<div class="ct-unit">' + (Math.abs(diff) === 1 ? 'day' : 'days') + '</div>' +
+          '<div class="ct-name">' + escHtml(dl.name.length > 18 ? dl.name.slice(0,16)+'…' : dl.name) + '</div>' +
+          '<div class="ct-imp importance-badge ' + impClass(dl.importance) + '" style="font-size:9px;padding:1px 5px;">' + impLabel(dl.importance) + '</div>' +
+        '</div>';
+      }).join('');
+      tilesEl.style.display = 'flex';
+    } else {
+      tilesEl.style.display = 'none';
+    }
+  }
+
   // ── Weather refresh from cache ──
   if(weatherCache) renderWeather(weatherCache);
+  updateNextTaskTicker();
 
   // ── Upcoming panel (right column) ──
   const upEl=document.getElementById('cmUpcomingPanel');
@@ -982,7 +1394,7 @@ function tickClock() {
   if(ckEl){ for(const node of ckEl.childNodes){ if(node.nodeType===3){ node.textContent=`${pad(h12)}:${pad(m)}:${pad(s)}`; break; } } }
   document.getElementById('clockAmpm').textContent=ampm;
   document.getElementById('clockDate').textContent=DAYS[now.getDay()]+', '+MONTHS[now.getMonth()]+' '+now.getDate()+', '+now.getFullYear();
-  checkAutoStart(now);checkAlarms(now);checkDeadlineWarnings(now);
+  checkAutoStart(now);checkAlarms(now);checkDeadlineWarnings(now);checkPerTaskReminders(now);checkMorningDigest(now);checkInReminders();if(now.getMinutes()===0&&now.getSeconds()===0){updateHeatmap();}if(timeboxMode)updateTimeboxTicker();
 }
 
 function checkAutoStart(now) {
@@ -1155,6 +1567,24 @@ function termRun(raw) {
       case 'stopwatch': case 'sw': openClockMode(); setTimeout(()=>openCmTab('sw'),200); termOk('Opened stopwatch'); break;
       case 'note': case 'notes': { const txt=rest.join(' '); if(txt){ cmNotes=(cmNotes?cmNotes+'\n':'')+txt; localStorage.setItem('dp_cmnotes',cmNotes); termOk('Note saved'); } else { termPrint('head','Quick Notes:'); (cmNotes||'(empty)').split('\n').forEach(l=>termPrint('out','  '+l)); } break; }
       case 'today': cmdToday(); break;
+      case 'summarize': cmdSummarize(); break;
+      case 'reschedule': case 'shift': cmdReschedule(sub, rest); break;
+      case 'block': cmdBlock(sub, rest); break;
+      case 'in': cmdRemindIn(sub, rest); break;
+      case 'analytics': case 'analytics': cmdAnalytics(sub); break;
+      case 'focus': cmdFocus(sub); break;
+      case 'review': openDailyReview(); termOk('Opening daily review…'); break;
+      case 'audit': openTimeAudit(); termOk('Opening time audit…'); break;
+      case 'autoschedule': case 'auto': cmdAutoSchedule(); break;
+      case 'unblock': cmdUnblock(sub, rest); break;
+      case 'blocks': case 'ls-blocks': cmdListBlocks(); break;
+      case 'template': case 'tmpl': cmdTemplate(sub, rest); break;
+      case 'dep': case 'deps': cmdDep(sub, rest); break;
+      case 'recurring': case 'rec': cmdRecurring(sub, rest); break;
+      case 'timebox': case 'tb': if(sub==='off'||sub==='disable'){disableTimeboxMode();termOk('Timebox off');}else{enableTimeboxMode();}; break;
+      case 'week': openWeekView(); termOk('Week view opened'); break;
+      case 'exam': case 'exams': openExamCountdown(); termOk('Exam countdown opened'); break;
+      case 'heatmap': renderHeatmap('termHeatmapDiv'); const thd=document.getElementById('termHeatmapDiv'); if(thd)thd.style.display='block'; break;
       default: termError(`Unknown command: ${cmd}. Type 'help' for commands.`);
     }
   } catch(e) { termError(e.message); }
@@ -1639,6 +2069,1207 @@ function cmdToday() {
   }
 }
 
+
+// ══════════════════════════════════════════════════════
+// ── FOCUS MODE ──
+// ══════════════════════════════════════════════════════
+let focusModeTask = null, focusInterval = null;
+
+function openFocusMode(taskId) {
+  const task = taskId ? tasks.find(t => t.id === taskId) : tasks.find(t => t.running);
+  if (!task) { alert('No running task found. Start a task first, or pass a task name.'); return; }
+  focusModeTask = task;
+  const overlay = document.getElementById('focusOverlay');
+  overlay.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  updateFocusMode();
+  focusInterval = setInterval(updateFocusMode, 1000);
+  if (!task.running) startTimer(task.id);
+}
+
+function closeFocusMode() {
+  document.getElementById('focusOverlay').style.display = 'none';
+  document.body.style.overflow = '';
+  clearInterval(focusInterval);
+  focusModeTask = null;
+}
+
+function updateFocusMode() {
+  if (!focusModeTask) return;
+  const task = tasks.find(t => t.id === focusModeTask.id);
+  if (!task) { closeFocusMode(); return; }
+  const total = task.duration * 60, elapsed = task.elapsed || 0;
+  const remaining = Math.max(total - elapsed, 0);
+  const pct = Math.min(elapsed / total, 1);
+  const m = Math.floor(remaining / 60), s = remaining % 60;
+  const pad = n => String(n).padStart(2, '0');
+  document.getElementById('focusTaskName').textContent = task.name;
+  document.getElementById('focusCountdown').textContent = pad(m) + ':' + pad(s);
+  document.getElementById('focusBar').style.width = (pct * 100) + '%';
+  document.getElementById('focusBar').style.background = timerColor(pct);
+  document.getElementById('focusImp').textContent = impLabel(task.importance);
+  document.getElementById('focusImp').className = 'focus-imp-badge ' + impClass(task.importance);
+  const now = new Date(), h = now.getHours(), min = now.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM', h12 = h % 12 || 12;
+  document.getElementById('focusClock').textContent = pad(h12) + ':' + pad(min) + ' ' + ampm;
+  if (remaining === 0) {
+    document.getElementById('focusCountdown').textContent = 'Done!';
+    document.getElementById('focusCountdown').style.color = '#52e89e';
+  }
+}
+
+function focusMarkDone() {
+  if (!focusModeTask) return;
+  const task = tasks.find(t => t.id === focusModeTask.id);
+  if (task) { task.checked = true; if (task.running) stopTimer(task.id); save(); renderTasks(); renderTimeline(); }
+  closeFocusMode();
+}
+
+function cmdFocus(q) {
+  if (q) {
+    const t = findTask(q);
+    if (!t) { termError('Task not found: ' + q); return; }
+    openFocusMode(t.id);
+    termOk('Focus mode: "' + t.name + '"');
+  } else {
+    const running = tasks.find(t => t.running);
+    if (!running) { termError('No running task. Start one first or: focus <name>'); return; }
+    openFocusMode(running.id);
+    termOk('Focus mode: "' + running.name + '"');
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// ── DAILY REVIEW ──
+// ══════════════════════════════════════════════════════
+let reviewData = { finished: [], carryover: [], blockers: '', wins: '', step: 0 };
+let reviews = JSON.parse(localStorage.getItem('dp_reviews') || '[]');
+
+function openDailyReview() {
+  reviewData = { finished: [], carryover: [], blockers: '', wins: '', step: 0 };
+  document.getElementById('reviewOverlay').style.display = 'flex';
+  renderReviewStep();
+}
+
+function closeDailyReview() {
+  document.getElementById('reviewOverlay').style.display = 'none';
+}
+
+function renderReviewStep() {
+  const el = document.getElementById('reviewContent');
+  const doneTasks = tasks.filter(t => t.checked);
+  const pendingTasks = tasks.filter(t => !t.checked);
+  const steps = [
+    {
+      title: "What did you finish today?",
+      sub: "Check off everything you completed",
+      html: () => {
+        if (!tasks.length) return '<div class="review-empty">No tasks tracked today.</div>';
+        return tasks.map(t =>
+          '<label class="review-check-row"><input type="checkbox" ' + (t.checked ? 'checked' : '') + ' onchange="reviewToggle(\'' + t.id + '\', this.checked)"><span class="' + (t.checked ? 'done-text' : '') + '">' + escHtml(t.name) + '</span><span class="review-dur">' + t.duration + 'min</span></label>'
+        ).join('');
+      }
+    },
+    {
+      title: "What's carrying over?",
+      sub: "Tasks to keep for tomorrow",
+      html: () => pendingTasks.map(t =>
+          '<label class="review-check-row"><input type="checkbox" checked onchange="reviewCarryover(\'' + t.id + '\', this.checked)"><span>' + escHtml(t.name) + '</span><span class="review-dur">' + t.duration + 'min</span></label>'
+        ).join('') || '<div class="review-empty">Nothing pending — great work!</div>'
+    },
+    {
+      title: "Any blockers or friction?",
+      sub: "What slowed you down or needs to change?",
+      html: () => '<textarea class="review-textarea" id="reviewBlockers" placeholder="e.g. kept getting interrupted, task was too vague, lost 30min to context switching…" oninput="reviewData.blockers=this.value">' + escHtml(reviewData.blockers) + '</textarea>'
+    },
+    {
+      title: "What went well?",
+      sub: "Your win for the day",
+      html: () => '<textarea class="review-textarea" id="reviewWins" placeholder="e.g. finished the lab report draft, had a productive 2-hour focus block…" oninput="reviewData.wins=this.value">' + escHtml(reviewData.wins) + '</textarea>'
+    },
+    {
+      title: "Review complete",
+      sub: "Here's your summary",
+      html: () => {
+        const d = tasks.filter(t => t.checked);
+        const p = tasks.filter(t => !t.checked);
+        return '<div class="review-summary">' +
+          '<div class="review-sum-row"><span class="review-sum-label">✓ Finished</span><span>' + d.length + ' task' + (d.length!==1?'s':'') + '</span></div>' +
+          (d.map(t => '<div class="review-sum-item">· ' + escHtml(t.name) + '</div>').join('')) +
+          (p.length ? '<div class="review-sum-row" style="margin-top:8px;"><span class="review-sum-label">↻ Carry over</span><span>' + p.length + '</span></div>' : '') +
+          (reviewData.blockers ? '<div class="review-sum-row" style="margin-top:8px;"><span class="review-sum-label">⚠ Blocker</span></div><div class="review-sum-item">' + escHtml(reviewData.blockers) + '</div>' : '') +
+          (reviewData.wins ? '<div class="review-sum-row" style="margin-top:8px;"><span class="review-sum-label">🌟 Win</span></div><div class="review-sum-item">' + escHtml(reviewData.wins) + '</div>' : '') +
+          '</div>';
+      }
+    }
+  ];
+  const step = steps[reviewData.step];
+  el.innerHTML =
+    '<div class="review-progress">' + steps.map((_,i) => '<div class="review-pip' + (i <= reviewData.step ? ' active' : '') + '"></div>').join('') + '</div>' +
+    '<div class="review-title">' + step.title + '</div>' +
+    '<div class="review-sub">' + step.sub + '</div>' +
+    '<div class="review-body">' + step.html() + '</div>' +
+    '<div class="review-nav">' +
+      (reviewData.step > 0 ? '<button class="review-btn secondary" onclick="reviewPrev()">← Back</button>' : '<div></div>') +
+      (reviewData.step < steps.length - 1
+        ? '<button class="review-btn" onclick="reviewNext()">Next →</button>'
+        : '<button class="review-btn" onclick="saveReview()">Save & Close</button>') +
+    '</div>';
+}
+
+function reviewToggle(id, val) { const t = tasks.find(x => x.id===id); if(t){ t.checked=val; save(); } }
+function reviewCarryover(id, keep) { /* carryover is just kept tasks */ }
+function reviewNext() { reviewData.step++; renderReviewStep(); }
+function reviewPrev() { reviewData.step--; renderReviewStep(); }
+
+function saveReview() {
+  const entry = {
+    date: toDateStr(new Date()),
+    finished: tasks.filter(t => t.checked).map(t => t.name),
+    pending: tasks.filter(t => !t.checked).map(t => t.name),
+    blockers: reviewData.blockers,
+    wins: reviewData.wins,
+    ts: Date.now()
+  };
+  reviews.unshift(entry);
+  if (reviews.length > 90) reviews = reviews.slice(0, 90);
+  localStorage.setItem('dp_reviews', JSON.stringify(reviews));
+  renderTasks();
+  closeDailyReview();
+}
+
+// ══════════════════════════════════════════════════════
+// ── TIME AUDIT ──
+// ══════════════════════════════════════════════════════
+function openTimeAudit() {
+  const overlay = document.getElementById('auditOverlay');
+  renderTimeAudit();
+  overlay.style.display = 'flex';
+}
+
+function closeTimeAudit() {
+  document.getElementById('auditOverlay').style.display = 'none';
+}
+
+function renderTimeAudit() {
+  const el = document.getElementById('auditContent');
+  const totalPlanned = tasks.reduce((s, t) => s + t.duration, 0);
+  const totalElapsed = tasks.reduce((s, t) => s + Math.floor((t.elapsed || 0) / 60), 0);
+  const done = tasks.filter(t => t.checked);
+  const running = tasks.filter(t => t.running);
+  const notStarted = tasks.filter(t => !t.checked && !t.running && !(t.elapsed > 0));
+
+  function bar(planned, actual) {
+    const maxMins = Math.max(planned, actual, 1);
+    const pw = Math.min((planned / maxMins) * 100, 100);
+    const aw = Math.min((actual / maxMins) * 100, 100);
+    const over = actual > planned;
+    return '<div class="audit-bar-wrap">' +
+      '<div class="audit-bar planned" style="width:' + pw + '%"></div>' +
+      '<div class="audit-bar actual' + (over ? ' over' : '') + '" style="width:' + aw + '%"></div>' +
+    '</div>';
+  }
+
+  let rows = tasks.map(t => {
+    const planned = t.duration;
+    const actual = Math.floor((t.elapsed || 0) / 60);
+    const diff = actual - planned;
+    const diffStr = diff === 0 ? '=' : (diff > 0 ? '+' + diff + 'm over' : Math.abs(diff) + 'm left');
+    const diffCls = diff > 5 ? 'audit-over' : diff < -5 ? 'audit-under' : 'audit-ok';
+    return '<div class="audit-row">' +
+      '<div class="audit-task-name' + (t.checked ? ' done-text' : '') + '">' + escHtml(t.name) + (t.running ? ' <span class="audit-running">▶</span>' : '') + '</div>' +
+      '<div class="audit-times"><span class="audit-planned">' + planned + 'm planned</span> · <span class="audit-actual">' + actual + 'm tracked</span> · <span class="' + diffCls + '">' + diffStr + '</span></div>' +
+      bar(planned, actual) +
+    '</div>';
+  }).join('');
+
+  el.innerHTML =
+    '<div class="audit-header">' +
+      '<div class="audit-stat"><div class="audit-stat-val">' + totalPlanned + 'm</div><div class="audit-stat-lbl">Planned</div></div>' +
+      '<div class="audit-stat"><div class="audit-stat-val">' + totalElapsed + 'm</div><div class="audit-stat-lbl">Tracked</div></div>' +
+      '<div class="audit-stat"><div class="audit-stat-val">' + done.length + '/' + tasks.length + '</div><div class="audit-stat-lbl">Done</div></div>' +
+      '<div class="audit-stat"><div class="audit-stat-val">' + (totalPlanned > 0 ? Math.round(totalElapsed / totalPlanned * 100) : 0) + '%</div><div class="audit-stat-lbl">Time used</div></div>' +
+    '</div>' +
+    '<div class="audit-legend"><span class="audit-legend-planned">■ Planned</span><span class="audit-legend-actual">■ Actual</span></div>' +
+    (rows || '<div class="review-empty">No tasks with time data yet.</div>') +
+    '<div class="audit-footer">Sessions run today · timer data only</div>';
+}
+
+// ══════════════════════════════════════════════════════
+// ── AUTO-SCHEDULE ──
+// ══════════════════════════════════════════════════════
+function cmdAutoSchedule() {
+  const unscheduled = tasks.filter(t => !t.startTime && !t.checked);
+  if (!unscheduled.length) { termWarn('All tasks already have start times (or are done).'); return; }
+
+  // Build occupied slots from existing timed tasks + events + blocks
+  const today = new Date();
+  const occupied = [];
+  tasks.filter(t => t.startTime && !t.checked).forEach(t => {
+    const [h, m] = t.startTime.split(':').map(Number);
+    occupied.push({ start: h * 60 + m, end: h * 60 + m + t.duration });
+  });
+  events.filter(ev => eventOccursOn(ev, today) && ev.time).forEach(ev => {
+    const [h, m] = ev.time.split(':').map(Number);
+    occupied.push({ start: h * 60 + m, end: h * 60 + m + ev.duration });
+  });
+  timeBlocks.forEach(b => {
+    occupied.push({ start: b.startMins, end: b.endMins });
+  });
+  occupied.sort((a, b) => a.start - b.start);
+
+  // Start scheduling from next 15-min boundary after now
+  const now = today.getHours() * 60 + today.getMinutes();
+  let cursor = Math.ceil(now / 15) * 15;
+  if (cursor < 480) cursor = 480; // not before 8am
+
+  const scheduled = [];
+  for (const task of unscheduled) {
+    // Find next free slot with 10min buffer
+    while (true) {
+      const end = cursor + task.duration;
+      const conflict = occupied.find(o => !(end + 10 <= o.start || cursor >= o.end + 10));
+      if (!conflict) break;
+      cursor = conflict.end + 10;
+      cursor = Math.ceil(cursor / 15) * 15;
+    }
+    const h = Math.floor(cursor / 60), m = cursor % 60;
+    task.startTime = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+    occupied.push({ start: cursor, end: cursor + task.duration });
+    occupied.sort((a, b) => a.start - b.start);
+    cursor += task.duration + 10;
+    cursor = Math.ceil(cursor / 60) * 60;
+    scheduled.push(task);
+  }
+
+  // Check buffer warnings
+  const warnings = checkBufferWarnings();
+  save(); renderTasks(); renderTimeline();
+  termOk('Scheduled ' + scheduled.length + ' task' + (scheduled.length !== 1 ? 's' : '') + ':');
+  scheduled.forEach(t => termPrint('out', '  ' + t.startTime + '  ' + t.name + ' (' + t.duration + 'min)'));
+  if (warnings.length) { termPrint('warn', ''); warnings.forEach(w => termPrint('warn', '  ⚠ ' + w)); }
+}
+
+// ══════════════════════════════════════════════════════
+// ── BUFFER TIME WARNINGS ──
+// ══════════════════════════════════════════════════════
+function checkBufferWarnings() {
+  const warnings = [];
+  const today = new Date();
+  const all = [];
+  tasks.filter(t => t.startTime && !t.checked).forEach(t => {
+    const [h, m] = t.startTime.split(':').map(Number);
+    all.push({ name: t.name, start: h*60+m, end: h*60+m+t.duration, type: 'task' });
+  });
+  events.filter(ev => eventOccursOn(ev, today) && ev.time).forEach(ev => {
+    const [h, m] = ev.time.split(':').map(Number);
+    all.push({ name: ev.name, start: h*60+m, end: h*60+m+ev.duration, type: 'event' });
+  });
+  all.sort((a, b) => a.start - b.start);
+  for (let i = 0; i < all.length - 1; i++) {
+    const gap = all[i+1].start - all[i].end;
+    if (gap < 0) warnings.push('"' + all[i].name + '" overlaps with "' + all[i+1].name + '"');
+    else if (gap < 5) warnings.push('"' + all[i].name + '" ends at ' + fmtMins(all[i].end) + ', "' + all[i+1].name + '" starts at ' + fmtMins(all[i+1].start) + ' — no buffer');
+  }
+  // Past midnight check
+  all.forEach(item => { if (item.end > 1440) warnings.push('"' + item.name + '" runs past midnight'); });
+  return warnings;
+}
+
+function fmtMins(mins) {
+  const h = Math.floor(mins / 60) % 24, m = mins % 60;
+  const ampm = h >= 12 ? 'PM' : 'AM', h12 = h % 12 || 12;
+  return h12 + ':' + String(m).padStart(2, '0') + ' ' + ampm;
+}
+
+// ══════════════════════════════════════════════════════
+// ── TIME BLOCKS (focus blocks / blocked periods) ──
+// ══════════════════════════════════════════════════════
+let timeBlocks = JSON.parse(localStorage.getItem('dp_blocks') || '[]');
+
+function saveBlocks() { localStorage.setItem('dp_blocks', JSON.stringify(timeBlocks)); }
+
+function cmdBlock(start, rest) {
+  if (!start) { termError('Usage: block <start> <end> "<label>"  e.g. block 9am 10:30am "Deep work"'); return; }
+  const endArg = rest[0], label = rest.slice(1).join(' ') || 'Focus block';
+  if (!endArg) { termError('Need an end time: block <start> <end> "<label>"'); return; }
+  const startMins = timeToMins(parseTimeArg(start));
+  const endMins   = timeToMins(parseTimeArg(endArg));
+  if (endMins <= startMins) { termError('End time must be after start time'); return; }
+  const block = { id: uid(), label, startMins, endMins, type: 'focus', date: toDateStr(new Date()) };
+  timeBlocks.push(block); saveBlocks(); renderTimeline();
+  termOk('Block added: "' + label + '" ' + fmtMins(startMins) + ' – ' + fmtMins(endMins));
+  const warnings = checkBufferWarnings();
+  warnings.forEach(w => termWarn(w));
+}
+
+function cmdUnblock(id, rest) {
+  const q = [id, ...rest].join(' ');
+  const b = timeBlocks.find(b => b.id === q || b.label.toLowerCase().includes(q.toLowerCase()));
+  if (!b) { termError('Block not found: ' + q); return; }
+  timeBlocks = timeBlocks.filter(x => x.id !== b.id); saveBlocks(); renderTimeline();
+  termOk('Removed block: "' + b.label + '"');
+}
+
+function cmdListBlocks() {
+  if (!timeBlocks.length) { termWarn('No blocks set'); return; }
+  termPrint('head', 'Time blocks (' + timeBlocks.length + '):');
+  timeBlocks.forEach(b => termPrint('out', '  ' + fmtMins(b.startMins) + ' – ' + fmtMins(b.endMins) + '  "' + b.label + '"'));
+}
+
+function timeToMins(timeStr) {
+  if (!timeStr) return 0;
+  const [h, m] = timeStr.split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+// Also render blocks in timeline - patch renderTimeline to include them
+// (done in the renderTimeline function via timeBlocks global)
+
+// ══════════════════════════════════════════════════════
+// ── IN-REMINDERS (fire in X minutes) ──
+// ══════════════════════════════════════════════════════
+let inReminders = [];
+
+function cmdRemindIn(timeArg, rest) {
+  if (!timeArg) { termError('Usage: in <time> <message>  e.g. in 20m check the oven'); return; }
+  // Parse duration: 20m, 1h, 90s, 1h30m
+  let mins = 0;
+  const str = timeArg.toLowerCase();
+  const hm = str.match(/(\d+)h(\d+)?m?/);
+  const hOnly = str.match(/^(\d+)h$/);
+  const mOnly = str.match(/^(\d+)m$/);
+  const sOnly = str.match(/^(\d+)s$/);
+  if (hm) mins = parseInt(hm[1]) * 60 + parseInt(hm[2] || 0);
+  else if (hOnly) mins = parseInt(hOnly[1]) * 60;
+  else if (mOnly) mins = parseInt(mOnly[1]);
+  else if (sOnly) mins = parseInt(sOnly[1]) / 60;
+  else mins = parseInt(str) || 5;
+
+  const msg = rest.join(' ') || 'Reminder';
+  const fireAt = Date.now() + mins * 60000;
+  const id = uid();
+  inReminders.push({ id, msg, fireAt });
+  const pad = n => String(n).padStart(2, '0');
+  const fireDate = new Date(fireAt);
+  termOk('Reminder set: "' + msg + '" in ' + mins + 'min (at ' + pad(fireDate.getHours()) + ':' + pad(fireDate.getMinutes()) + ')');
+}
+
+function checkInReminders() {
+  const now = Date.now();
+  const fired = inReminders.filter(r => r.fireAt <= now);
+  if (!fired.length) return;
+  inReminders = inReminders.filter(r => r.fireAt > now);
+  fired.forEach(r => fireInReminder(r));
+}
+
+function fireInReminder(r) {
+  // Show overlay notification
+  const overlay = document.getElementById('reminderOverlay');
+  document.getElementById('reminderMsg').textContent = r.msg;
+  overlay.style.display = 'flex';
+  playTaskEndSound();
+  setTimeout(() => { if (overlay.style.display !== 'none') dismissReminder(); }, 30000);
+}
+
+function dismissReminder() {
+  document.getElementById('reminderOverlay').style.display = 'none';
+}
+
+// ══════════════════════════════════════════════════════
+// ── ANALYTICS ──
+// ══════════════════════════════════════════════════════
+function openAnalytics() {
+  const overlay = document.getElementById('analyticsOverlay');
+  renderAnalytics();
+  overlay.style.display = 'flex';
+}
+
+function closeAnalytics() {
+  document.getElementById('analyticsOverlay').style.display = 'none';
+}
+
+function renderAnalytics() {
+  const el = document.getElementById('analyticsContent');
+  const reviewHistory = JSON.parse(localStorage.getItem('dp_reviews') || '[]');
+
+  // --- Compute stats ---
+  const totalTasks = tasks.length;
+  const doneTasks = tasks.filter(t => t.checked).length;
+  const totalMinsPlanned = tasks.reduce((s, t) => s + t.duration, 0);
+  const totalMinsTracked = tasks.reduce((s, t) => s + Math.floor((t.elapsed || 0) / 60), 0);
+  const completionRate = totalTasks > 0 ? Math.round(doneTasks / totalTasks * 100) : 0;
+
+  // Importance breakdown
+  const impBreakdown = ['low', 'medium', 'high', 'critical'].map(imp => ({
+    imp,
+    total: tasks.filter(t => t.importance === imp).length,
+    done:  tasks.filter(t => t.importance === imp && t.checked).length
+  })).filter(x => x.total > 0);
+
+  // Most time-intensive tasks
+  const topTasks = [...tasks].sort((a, b) => (b.elapsed || 0) - (a.elapsed || 0)).slice(0, 5);
+
+  // Deadlines health
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const overdueCount  = deadlines.filter(dl => { const d = new Date(dl.date+'T00:00:00'); return d < today && !dl.checked; }).length;
+  const dueSoonCount  = deadlines.filter(dl => { const d = new Date(dl.date+'T00:00:00'); const diff = Math.round((d-today)/86400000); return diff >= 0 && diff <= 3 && !dl.checked; }).length;
+  const doneDeadlines = deadlines.filter(dl => dl.checked).length;
+
+  // Review streaks
+  const recentReviews = reviewHistory.slice(0, 7);
+
+  // --- Render ---
+  function statCard(val, lbl, sub, color) {
+    return '<div class="an-stat-card"><div class="an-stat-val" style="color:' + (color||'var(--accent)') + '">' + val + '</div><div class="an-stat-lbl">' + lbl + '</div>' + (sub ? '<div class="an-stat-sub">' + sub + '</div>' : '') + '</div>';
+  }
+
+  function progressBar(val, max, color) {
+    const pct = max > 0 ? Math.min(val / max * 100, 100) : 0;
+    return '<div class="an-bar-bg"><div class="an-bar-fill" style="width:' + pct + '%;background:' + (color || 'var(--accent)') + ';"></div></div>';
+  }
+
+  el.innerHTML =
+    // Header stats
+    '<div class="an-stat-grid">' +
+      statCard(completionRate + '%', 'Completion', doneTasks + '/' + totalTasks + ' tasks', completionRate >= 75 ? '#2D6A4F' : completionRate >= 40 ? '#E67E22' : '#C0392B') +
+      statCard(totalMinsTracked + 'm', 'Time tracked', 'of ' + totalMinsPlanned + 'm planned') +
+      statCard(deadlines.length, 'Deadlines', overdueCount ? overdueCount + ' overdue' : dueSoonCount ? dueSoonCount + ' due soon' : 'all clear', overdueCount ? '#C0392B' : dueSoonCount ? '#E67E22' : '#2D6A4F') +
+      statCard(reviewHistory.length, 'Reviews done', 'all time') +
+    '</div>' +
+
+    // Task priority breakdown
+    '<div class="an-section-title">Tasks by Priority</div>' +
+    '<div class="an-imp-list">' +
+    impBreakdown.map(x => {
+      const pct = Math.round(x.done / x.total * 100);
+      const color = {low:'#3B6D11',medium:'#856404',high:'#854F0B',critical:'#A32D2D'}[x.imp];
+      return '<div class="an-imp-row">' +
+        '<div class="an-imp-label"><span class="importance-badge ' + impClass(x.imp) + '">' + impLabel(x.imp) + '</span></div>' +
+        '<div class="an-imp-bar">' + progressBar(x.done, x.total, color) + '</div>' +
+        '<div class="an-imp-count">' + x.done + '/' + x.total + '</div>' +
+      '</div>';
+    }).join('') +
+    '</div>' +
+
+    // Time spent on tasks
+    '<div class="an-section-title">Most Time Spent</div>' +
+    '<div class="an-task-time-list">' +
+    (topTasks.filter(t => (t.elapsed||0) > 0).map(t => {
+      const actual = Math.floor((t.elapsed || 0) / 60);
+      const planned = t.duration;
+      const over = actual > planned;
+      return '<div class="an-task-time-row">' +
+        '<div class="an-task-time-name' + (t.checked ? ' done-text' : '') + '">' + escHtml(t.name) + '</div>' +
+        '<div class="an-task-time-bar">' + progressBar(actual, Math.max(planned, actual), over ? '#C0392B' : 'var(--accent)') + '</div>' +
+        '<div class="an-task-time-val' + (over ? ' audit-over' : '') + '">' + actual + 'm' + (over ? ' (+' + (actual-planned) + ')' : '') + '</div>' +
+      '</div>';
+    }).join('') || '<div class="review-empty">No time tracked yet</div>') +
+    '</div>' +
+
+    // Deadline health
+    '<div class="an-section-title">Deadline Health</div>' +
+    '<div class="an-dl-health">' +
+      '<div class="an-dl-stat an-dl-done"><div class="an-dl-num">' + doneDeadlines + '</div><div>Done</div></div>' +
+      '<div class="an-dl-stat an-dl-soon"><div class="an-dl-num">' + dueSoonCount + '</div><div>Due soon</div></div>' +
+      '<div class="an-dl-stat an-dl-over"><div class="an-dl-num">' + overdueCount + '</div><div>Overdue</div></div>' +
+    '</div>' +
+
+    // Review history
+    '<div class="an-section-title">Daily Reviews (last 7)</div>' +
+    '<div class="an-reviews">' +
+    (recentReviews.length ? recentReviews.map(r =>
+      '<div class="an-review-row">' +
+        '<div class="an-review-date">' + r.date + '</div>' +
+        '<div class="an-review-pills">' +
+          '<span class="an-review-pill done">✓ ' + r.finished.length + ' done</span>' +
+          (r.pending.length ? '<span class="an-review-pill carry">↻ ' + r.pending.length + ' carry</span>' : '') +
+          (r.wins ? '<span class="an-review-pill win">🌟</span>' : '') +
+        '</div>' +
+        (r.wins ? '<div class="an-review-win">' + escHtml(r.wins.slice(0, 80)) + (r.wins.length > 80 ? '…' : '') + '</div>' : '') +
+      '</div>'
+    ).join('') : '<div class="review-empty">No review history yet. Run daily reviews to see trends.</div>') +
+    '</div>' +
+    '<div class="an-section-title">Productivity Heatmap (12 weeks)</div>' +
+    '<div id="analyticsHeatmap"></div>';
+  setTimeout(()=>renderHeatmap('analyticsHeatmap'),50);
+}
+
+function cmdAnalytics(sub) {
+  if (sub === 'summary' || !sub) {
+    // Print quick stats to terminal
+    const done = tasks.filter(t => t.checked).length;
+    const rate = tasks.length ? Math.round(done / tasks.length * 100) : 0;
+    const tracked = tasks.reduce((s,t) => s + Math.floor((t.elapsed||0)/60), 0);
+    const planned = tasks.reduce((s,t) => s + t.duration, 0);
+    const today = new Date(); today.setHours(0,0,0,0);
+    const overdue = deadlines.filter(dl => new Date(dl.date+'T00:00:00') < today && !dl.checked).length;
+    termPrint('head', '── Analytics Summary ──');
+    termPrint('out',  '  Completion rate:  ' + rate + '%  (' + done + '/' + tasks.length + ' tasks)');
+    termPrint('out',  '  Time tracked:     ' + tracked + 'min  of ' + planned + 'min planned');
+    termPrint('out',  '  Overdue deadlines:' + overdue);
+    termPrint('out',  '  Reviews logged:   ' + JSON.parse(localStorage.getItem('dp_reviews')||'[]').length);
+    termPrint('dim',  "  Run 'analytics' without args to open the full dashboard");
+    openAnalytics();
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// ── SUMMARIZE COMMAND ──
+// ══════════════════════════════════════════════════════
+function cmdSummarize() {
+  const now = new Date();
+  const dateStr = DAYS[now.getDay()] + ', ' + MONTHS[now.getMonth()] + ' ' + now.getDate();
+  const done = tasks.filter(t => t.checked);
+  const pending = tasks.filter(t => !t.checked);
+  const tracked = tasks.reduce((s,t) => s + Math.floor((t.elapsed||0)/60), 0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const urgent = deadlines.filter(dl => { const d=new Date(dl.date+'T00:00:00'); const diff=Math.round((d-today)/86400000); return diff<=1&&!dl.checked; });
+  const evToday = events.filter(ev => eventOccursOn(ev, now));
+  let summary = dateStr + '. ';
+  if (done.length) summary += 'Completed ' + done.map(t => t.name).join(', ') + '. ';
+  if (tracked > 0) summary += 'Tracked ' + tracked + ' min of focused work. ';
+  if (pending.length) summary += 'Still pending: ' + pending.map(t => t.name).join(', ') + '. ';
+  if (evToday.length) summary += 'Events: ' + evToday.map(e => e.name + (e.time?' @'+e.time:'')).join(', ') + '. ';
+  if (urgent.length) summary += '⚠ Urgent deadlines: ' + urgent.map(dl => dl.name + ' (' + deadlineCountdown(dl.date).label + ')').join(', ') + '.';
+  termPrint('head', '── Day Summary ──');
+  termPrint('out', summary);
+  termPrint('dim', '  (copy the line above to paste into a journal)');
+  // Also copy to clipboard if available
+  if (navigator.clipboard) navigator.clipboard.writeText(summary).then(() => termPrint('dim', '  ✓ Copied to clipboard'));
+}
+
+// ══════════════════════════════════════════════════════
+// ── RESCHEDULE COMMAND ──
+// ══════════════════════════════════════════════════════
+function cmdReschedule(shiftArg, rest) {
+  if (!shiftArg) { termError('Usage: reschedule +30  or  reschedule -15  (minutes)'); return; }
+  const sign = shiftArg.startsWith('-') ? -1 : 1;
+  const mins = parseInt(shiftArg.replace(/[+\-]/g, '')) || 0;
+  if (!mins) { termError('Invalid shift: ' + shiftArg + '. Use +30 or -15'); return; }
+  const shifted = [];
+  tasks.forEach(t => {
+    if (!t.startTime || t.checked) return;
+    const [h, m] = t.startTime.split(':').map(Number);
+    let total = h * 60 + m + sign * mins;
+    total = Math.max(0, Math.min(1439, total));
+    t.startTime = String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+    shifted.push(t.name + ' → ' + t.startTime);
+  });
+  if (!shifted.length) { termWarn('No timed tasks to shift'); return; }
+  save(); renderTasks(); renderTimeline();
+  termOk('Shifted ' + shifted.length + ' task' + (shifted.length!==1?'s':'') + ' by ' + (sign>0?'+':'') + (sign*mins) + 'min:');
+  shifted.forEach(s => termPrint('out', '  ' + s));
+  const warnings = checkBufferWarnings();
+  warnings.forEach(w => termWarn(w));
+}
+
+
+// ══════════════════════════════════════════════════════
+// ── SUBTASKS ──
+// ══════════════════════════════════════════════════════
+function addSubtask(taskId) {
+  const inp = document.getElementById('sti_' + taskId);
+  if (!inp) return;
+  const name = inp.value.trim();
+  if (!name) return;
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return;
+  if (!task.subtasks) task.subtasks = [];
+  task.subtasks.push({ id: uid(), name, done: false });
+  inp.value = '';
+  save(); renderTasks();
+}
+
+function subtaskKeydown(e, taskId) {
+  if (e.key === 'Enter') { e.preventDefault(); addSubtask(taskId); }
+}
+
+function toggleSubtask(taskId, subId) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task || !task.subtasks) return;
+  const sub = task.subtasks.find(s => s.id === subId);
+  if (sub) { sub.done = !sub.done; save(); renderTasks(); }
+}
+
+function deleteSubtask(taskId, subId) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return;
+  task.subtasks = (task.subtasks || []).filter(s => s.id !== subId);
+  save(); renderTasks();
+}
+
+// ══════════════════════════════════════════════════════
+// ── TASK NOTES ──
+// ══════════════════════════════════════════════════════
+function toggleTaskNotes(taskId) {
+  const body = document.getElementById('notes_' + taskId);
+  if (!body) return;
+  const open = body.style.display === 'block';
+  body.style.display = open ? 'none' : 'block';
+  if (!open) { const ta = body.querySelector('textarea'); if (ta) ta.focus(); }
+}
+
+function saveTaskNote(taskId, val) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return;
+  task.notes = val;
+  save();
+}
+
+// ══════════════════════════════════════════════════════
+// ── TASK DEPENDENCIES ──
+// ══════════════════════════════════════════════════════
+function setDependency(taskId, blockedById) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return;
+  if (!task.blockedBy) task.blockedBy = [];
+  if (!task.blockedBy.includes(blockedById)) {
+    task.blockedBy.push(blockedById);
+    save(); renderTasks();
+  }
+}
+
+function removeDependency(taskId, blockedById) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task || !task.blockedBy) return;
+  task.blockedBy = task.blockedBy.filter(id => id !== blockedById);
+  save(); renderTasks();
+}
+
+function isBlocked(task) {
+  if (!task.blockedBy || !task.blockedBy.length) return false;
+  return task.blockedBy.some(bid => {
+    const blocker = tasks.find(t => t.id === bid);
+    return blocker && !blocker.checked;
+  });
+}
+
+// ══════════════════════════════════════════════════════
+// ── RECURRING TASKS ──
+// ══════════════════════════════════════════════════════
+function resetRecurringTasks() {
+  const today = toDateStr(new Date());
+  const lastReset = localStorage.getItem('dp_lastreset');
+  if (lastReset === today) return; // already reset today
+  tasks.forEach(t => {
+    if (!t.recurring) return;
+    t.checked = false;
+    t.elapsed = 0;
+    if (t.running) { clearInterval(timers[t.id]); delete timers[t.id]; t.running = false; }
+  });
+  localStorage.setItem('dp_lastreset', today);
+  save();
+}
+
+// ══════════════════════════════════════════════════════
+// ── TASK TEMPLATES ──
+// ══════════════════════════════════════════════════════
+function saveTemplates() { localStorage.setItem('dp_templates', JSON.stringify(templates)); }
+
+function createTemplate(name, taskDefs) {
+  // taskDefs: [{name, duration, importance}]
+  templates.push({ id: uid(), name, tasks: taskDefs, created: Date.now() });
+  saveTemplates();
+}
+
+function stampTemplate(templateId, startTime) {
+  const tmpl = templates.find(t => t.id === templateId);
+  if (!tmpl) return 0;
+  let cursor = startTime ? timeToMins(startTime) : null;
+  tmpl.tasks.forEach(def => {
+    const newTask = {
+      id: uid(), name: def.name,
+      importance: def.importance || 'medium',
+      duration: def.duration || 30,
+      startTime: cursor !== null ? String(Math.floor(cursor/60)).padStart(2,'0')+':'+String(cursor%60).padStart(2,'0') : '',
+      elapsed:0, running:false, done:false, checked:false,
+      subtasks:[], notes:'', blockedBy:[], recurring:null
+    };
+    tasks.push(newTask);
+    if (cursor !== null) cursor += def.duration + 5;
+  });
+  save(); renderTasks(); renderTimeline();
+  return tmpl.tasks.length;
+}
+
+function deleteTemplate(id) {
+  templates = templates.filter(t => t.id !== id);
+  saveTemplates();
+}
+
+function openTemplateManager() {
+  renderTemplateManager();
+  document.getElementById('templateOverlay').style.display = 'flex';
+}
+function closeTemplateManager() {
+  document.getElementById('templateOverlay').style.display = 'none';
+}
+
+function renderTemplateManager() {
+  const el = document.getElementById('templateContent');
+  if (!el) return;
+  let html = '<div class="tmpl-list">';
+  if (!templates.length) {
+    html += '<div class="review-empty">No templates yet. Create one via terminal:<br><code>template save "Homework" "Read:30:high,Notes:20:medium,Review:15:medium"</code></div>';
+  } else {
+    templates.forEach(t => {
+      html += '<div class="tmpl-card">' +
+        '<div class="tmpl-name">' + escHtml(t.name) + '</div>' +
+        '<div class="tmpl-tasks">' + t.tasks.map(d => escHtml(d.name) + ' ' + d.duration + 'min').join(' · ') + '</div>' +
+        '<div class="tmpl-actions">' +
+          '<button class="review-btn" style="font-size:12px;padding:6px 14px;" onclick="stampTemplateUI(\''+ t.id +'\')">▶ Stamp to today</button>' +
+          '<button class="review-btn secondary" style="font-size:12px;padding:6px 10px;" onclick="deleteTemplate(\''+ t.id +'\');renderTemplateManager()">✕</button>' +
+        '</div>' +
+      '</div>';
+    });
+  }
+  html += '</div>';
+  // Create new template UI
+  html += '<div class="tmpl-create">' +
+    '<div class="an-section-title">Create New Template</div>' +
+    '<input type="text" id="tmplName" class="tmpl-input" placeholder="Template name, e.g. Morning Routine" />' +
+    '<textarea id="tmplDefs" class="review-textarea" style="min-height:70px;" placeholder="Tasks, one per line:\nRead chapters: 30min: high\nMake notes: 20min: medium\nReview: 15min: medium"></textarea>' +
+    '<button class="review-btn" onclick="createTemplateUI()">+ Save Template</button>' +
+  '</div>';
+  el.innerHTML = html;
+}
+
+function stampTemplateUI(id) {
+  const startVal = prompt('Start time for first task? (e.g. 14:30, 2pm) — leave blank for no time');
+  const count = stampTemplate(id, startVal || null);
+  closeTemplateManager();
+  termOk('Stamped ' + count + ' tasks from template');
+}
+
+function createTemplateUI() {
+  const name = document.getElementById('tmplName').value.trim();
+  const defs = document.getElementById('tmplDefs').value.trim();
+  if (!name || !defs) return;
+  const taskDefs = defs.split('\n').map(line => {
+    const parts = line.split(':').map(s => s.trim());
+    return { name: parts[0] || 'Task', duration: parseInt(parts[1]) || 30, importance: normalizeImp(parts[2] || 'medium') };
+  }).filter(d => d.name);
+  if (!taskDefs.length) return;
+  createTemplate(name, taskDefs);
+  renderTemplateManager();
+}
+
+// ══════════════════════════════════════════════════════
+// ── TIMEBOX MODE ──
+// ══════════════════════════════════════════════════════
+function enableTimeboxMode() {
+  timeboxMode = true;
+  document.getElementById('timeboxBanner').style.display = 'flex';
+  timeboxInterval = setInterval(updateTimeboxTicker, 10000);
+  updateTimeboxTicker();
+  termOk('Timebox mode enabled — schedule locked, auto-advancing');
+}
+
+function disableTimeboxMode() {
+  timeboxMode = false;
+  clearInterval(timeboxInterval);
+  document.getElementById('timeboxBanner').style.display = 'none';
+}
+
+function updateTimeboxTicker() {
+  const now = new Date();
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  // Find next scheduled task
+  const upcoming = tasks
+    .filter(t => t.startTime && !t.checked)
+    .map(t => { const [h,m] = t.startTime.split(':').map(Number); return { ...t, startMins: h*60+m }; })
+    .sort((a,b) => a.startMins - b.startMins);
+  const next = upcoming.find(t => t.startMins >= nowMins);
+  const current = upcoming.find(t => {
+    const endMins = t.startMins + t.duration;
+    return t.startMins <= nowMins && nowMins < endMins;
+  });
+  const el = document.getElementById('timeboxInfo');
+  if (!el) return;
+  if (current) {
+    const elapsed = (nowMins - current.startMins);
+    const remaining = current.duration - elapsed;
+    const overrun = remaining < 0;
+    el.innerHTML = (overrun ? '⚠ Overrunning: ' : '▶ Now: ') +
+      '<strong>' + escHtml(current.name) + '</strong>' +
+      (overrun ? ' by ' + Math.abs(remaining) + 'min' : ' — ' + remaining + 'min left') +
+      (next ? ' → Next: ' + escHtml(next.name) + ' @' + next.startTime : '');
+    el.style.color = overrun ? '#E74C3C' : 'inherit';
+    if (overrun && !current.running) playTaskEndSound();
+  } else if (next) {
+    const diff = next.startMins - nowMins;
+    el.innerHTML = 'Up next: <strong>' + escHtml(next.name) + '</strong> in ' + diff + 'min @' + next.startTime;
+    el.style.color = 'inherit';
+    // auto-start if it's time
+    if (diff <= 0 && !next.running) startTimer(next.id);
+  } else {
+    el.innerHTML = 'No more scheduled tasks today';
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// ── WEEK VIEW ──
+// ══════════════════════════════════════════════════════
+function openWeekView() {
+  weekViewDate = weekViewDate || new Date();
+  renderWeekView();
+  document.getElementById('weekViewOverlay').style.display = 'flex';
+}
+function closeWeekView() { document.getElementById('weekViewOverlay').style.display = 'none'; }
+function weekViewPrev() { weekViewDate.setDate(weekViewDate.getDate()-7); renderWeekView(); }
+function weekViewNext() { weekViewDate.setDate(weekViewDate.getDate()+7); renderWeekView(); }
+
+function renderWeekView() {
+  const el = document.getElementById('weekViewContent');
+  if (!el) return;
+  // Get Monday of current week
+  const d = new Date(weekViewDate);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  d.setDate(diff); d.setHours(0,0,0,0);
+  const weekDays = Array.from({length:7}, (_,i) => { const dd = new Date(d); dd.setDate(d.getDate()+i); return dd; });
+  const today = toDateStr(new Date());
+  const HOUR_H = 40;
+
+  // Week header
+  let html = '<div class="wv-header">';
+  html += '<div class="wv-time-col"></div>';
+  weekDays.forEach(wd => {
+    const ds = toDateStr(wd);
+    const isToday = ds === today;
+    html += '<div class="wv-day-head' + (isToday?' wv-today':'') + '">' +
+      '<div class="wv-day-name">' + DAYS[wd.getDay()] + '</div>' +
+      '<div class="wv-day-num' + (isToday?' wv-today-num':'') + '">' + wd.getDate() + '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+
+  // Grid
+  html += '<div class="wv-grid-wrap"><div class="wv-grid">';
+  // Time labels + rows
+  html += '<div class="wv-time-lanes">';
+  for (let h = 0; h < 24; h++) {
+    const lbl = h===0?'12am':h<12?h+'am':h===12?'12pm':(h-12)+'pm';
+    html += '<div class="wv-hour-row" style="height:'+HOUR_H+'px;"><span class="wv-hour-lbl">'+lbl+'</span></div>';
+  }
+  html += '</div>';
+
+  // Day columns
+  weekDays.forEach(wd => {
+    const ds = toDateStr(wd);
+    const isToday = ds === today;
+    html += '<div class="wv-day-col' + (isToday?' wv-today-col':'') + '">';
+    // Hour lines
+    for (let h = 0; h < 24; h++) html += '<div class="wv-hour-line" style="top:'+(h*HOUR_H)+'px;"></div>';
+    // Tasks
+    tasks.filter(t => t.startTime && !t.checked).forEach(t => {
+      const [th, tm] = t.startTime.split(':').map(Number);
+      const top = (th*60+tm)/60*HOUR_H;
+      const height = Math.max(t.duration/60*HOUR_H, 18);
+      html += '<div class="wv-block task-block" style="top:'+top+'px;height:'+height+'px;" title="'+escHtml(t.name)+' ('+t.duration+'min)">' +
+        '<div class="wv-block-name">' + escHtml(t.name) + '</div>' +
+      '</div>';
+    });
+    // Events
+    events.filter(ev => eventOccursOn(ev, wd) && ev.time).forEach(ev => {
+      const [eh, em] = ev.time.split(':').map(Number);
+      const top = (eh*60+em)/60*HOUR_H;
+      const height = Math.max(ev.duration/60*HOUR_H, 18);
+      html += '<div class="wv-block event-block" style="top:'+top+'px;height:'+height+'px;" title="'+escHtml(ev.name)+'">' +
+        '<div class="wv-block-name">' + escHtml(ev.name) + '</div>' +
+      '</div>';
+    });
+    // Deadlines
+    deadlines.filter(dl => dl.date === ds && !dl.checked).forEach(dl => {
+      html += '<div class="wv-deadline-chip" title="Deadline: '+escHtml(dl.name)+'">📅 '+escHtml(dl.name.length>12?dl.name.slice(0,10)+'…':dl.name)+'</div>';
+    });
+    html += '</div>';
+  });
+  html += '</div></div>';
+
+  // Week label
+  const label = MONTHS[weekDays[0].getMonth()].slice(0,3) + ' ' + weekDays[0].getDate() + ' – ' +
+    MONTHS[weekDays[6].getMonth()].slice(0,3) + ' ' + weekDays[6].getDate() + ', ' + weekDays[6].getFullYear();
+  document.getElementById('weekViewLabel').textContent = label;
+  el.innerHTML = html;
+
+  // Scroll to 7am
+  setTimeout(() => { const w = el.querySelector('.wv-grid-wrap'); if(w) w.scrollTop = 7*HOUR_H; }, 50);
+}
+
+// ══════════════════════════════════════════════════════
+// ── EXAM COUNTDOWN MODE ──
+// ══════════════════════════════════════════════════════
+function openExamCountdown() {
+  renderExamCountdown();
+  document.getElementById('examOverlay').style.display = 'flex';
+}
+function closeExamCountdown() { document.getElementById('examOverlay').style.display = 'none'; }
+
+function renderExamCountdown() {
+  const el = document.getElementById('examContent');
+  if (!el) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  // Find critical/high deadlines
+  const exams = deadlines.filter(dl => !dl.checked && (dl.isExam || ['critical','high'].includes(dl.importance)))
+    .sort((a,b) => a.date.localeCompare(b.date));
+
+  if (!exams.length) {
+    el.innerHTML = '<div class="review-empty">No high-priority deadlines found.<br>Add a deadline with <strong>Critical</strong> or <strong>High</strong> priority to use this feature.</div>';
+    return;
+  }
+
+  let html = '';
+  exams.forEach(exam => {
+    const due = new Date(exam.date + 'T00:00:00');
+    const daysLeft = Math.max(Math.round((due - today) / 86400000), 0);
+    // Study plan: spread across available days, skip days with no time
+    const studyDays = Math.max(daysLeft, 1);
+    const hoursPerDay = daysLeft > 0 ? Math.max(1, Math.round(8 / Math.sqrt(daysLeft))) : 8;
+    const planRows = Math.min(studyDays, 7);
+
+    html += '<div class="exam-card">' +
+      '<div class="exam-header">' +
+        '<div class="exam-name">' + escHtml(exam.name) + '</div>' +
+        '<span class="importance-badge ' + impClass(exam.importance) + '">' + impLabel(exam.importance) + '</span>' +
+      '</div>' +
+      '<div class="exam-countdown-row">' +
+        '<div class="exam-days">' + daysLeft + '</div>' +
+        '<div class="exam-days-label">' + (daysLeft === 1 ? 'day' : 'days') + ' left</div>' +
+        '<div class="exam-date">Due ' + exam.date + '</div>' +
+      '</div>' +
+      '<div class="exam-plan-title">Suggested daily study</div>' +
+      '<div class="exam-plan">' +
+        Array.from({length: planRows}, (_,i) => {
+          const dd = new Date(today); dd.setDate(today.getDate()+i);
+          return '<div class="exam-plan-row">' +
+            '<span class="exam-plan-day">' + DAYS[dd.getDay()] + ' ' + (dd.getMonth()+1) + '/' + dd.getDate() + '</span>' +
+            '<span class="exam-plan-hrs">' + hoursPerDay + 'h study</span>' +
+          '</div>';
+        }).join('') +
+        (daysLeft > 7 ? '<div class="exam-plan-more">+ ' + (daysLeft-7) + ' more days…</div>' : '') +
+      '</div>' +
+      '<button class="review-btn" style="font-size:12px;padding:7px 16px;margin-top:10px;" onclick="stampExamPlan(\''+ exam.id +'\','+ hoursPerDay +')">▶ Add study tasks to today</button>' +
+    '</div>';
+  });
+  el.innerHTML = html;
+}
+
+function stampExamPlan(examId, hoursPerDay) {
+  const exam = deadlines.find(d => d.id === examId);
+  if (!exam) return;
+  const mins = hoursPerDay * 60;
+  tasks.push({ id:uid(), name:'Study: '+exam.name, importance: exam.importance,
+    duration: mins, startTime:'', elapsed:0, running:false, done:false, checked:false,
+    subtasks:[], notes:'Exam on '+exam.date, blockedBy:[], recurring:null });
+  save(); renderTasks();
+  closeExamCountdown();
+  termOk('Added ' + mins + 'min study task for "' + exam.name + '"');
+}
+
+// ══════════════════════════════════════════════════════
+// ── DAILY HEATMAP ──
+// ══════════════════════════════════════════════════════
+function updateHeatmap() {
+  const today = toDateStr(new Date());
+  const done = tasks.filter(t => t.checked).length;
+  const total = tasks.length;
+  const score = total > 0 ? Math.round(done / total * 100) : 0;
+  heatmapData[today] = { done, total, score };
+  localStorage.setItem('dp_heatmap', JSON.stringify(heatmapData));
+}
+
+function renderHeatmap(containerId) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  // Show last 12 weeks (84 days)
+  const today = new Date(); today.setHours(0,0,0,0);
+  const days = Array.from({length:84}, (_,i) => {
+    const d = new Date(today); d.setDate(today.getDate()-83+i);
+    return { date: toDateStr(d), dow: d.getDay(), label: DAYS[d.getDay()] + ' ' + (d.getMonth()+1) + '/' + d.getDate() };
+  });
+
+  // Pad start to Sunday
+  const startDow = days[0].dow;
+  const padded = Array(startDow).fill(null).concat(days);
+
+  function heatColor(score) {
+    if (score === undefined) return 'var(--surface2)';
+    if (score === 0) return '#f0ede6';
+    if (score < 25) return '#b7e4c7';
+    if (score < 50) return '#74c69d';
+    if (score < 75) return '#40916c';
+    return '#1b4332';
+  }
+
+  let html = '<div class="heatmap-grid">';
+  html += '<div class="heatmap-dow-labels">' + ['S','M','T','W','T','F','S'].map(d=>'<div>'+d+'</div>').join('') + '</div>';
+  html += '<div class="heatmap-cells">';
+  padded.forEach(day => {
+    if (!day) { html += '<div class="heatmap-cell empty"></div>'; return; }
+    const data = heatmapData[day.date];
+    const score = data ? data.score : undefined;
+    const isToday = day.date === toDateStr(new Date());
+    html += '<div class="heatmap-cell' + (isToday?' hm-today':'') + '" style="background:' + heatColor(score) + ';" title="' + day.label + (data ? ': '+data.done+'/'+data.total+' tasks ('+score+'%)' : ': no data') + '"></div>';
+  });
+  html += '</div></div>';
+  el.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════
+// ── OVERDUE RADAR ──
+// ══════════════════════════════════════════════════════
+function renderOverdueRadar() {
+  const el = document.getElementById('overdueRadar');
+  if (!el) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const overdueDl = deadlines.filter(dl => {
+    const due = new Date(dl.date+'T00:00:00');
+    return due < today && !dl.checked;
+  });
+  const pendingHighTasks = tasks.filter(t => !t.checked && ['critical','high'].includes(t.importance));
+  const total = overdueDl.length + (pendingHighTasks.filter(t=>isBlocked(t)).length);
+
+  if (!overdueDl.length && !pendingHighTasks.length) {
+    el.style.display = 'none';
+    return;
+  }
+
+  el.style.display = 'flex';
+  let msg = '';
+  if (overdueDl.length) msg += overdueDl.length + ' overdue deadline' + (overdueDl.length>1?'s':'');
+  if (pendingHighTasks.length) {
+    if (msg) msg += ' · ';
+    msg += pendingHighTasks.length + ' high-priority task' + (pendingHighTasks.length>1?'s':'') + ' pending';
+  }
+  el.innerHTML =
+    '<span class="radar-icon">🔴</span>' +
+    '<span class="radar-text">' + msg + '</span>' +
+    '<div class="radar-items">' +
+      overdueDl.map(dl => '<span class="radar-pill">📅 ' + escHtml(dl.name) + ' · ' + deadlineCountdown(dl.date).label + '</span>').join('') +
+    '</div>' +
+    '<button class="radar-close" onclick="document.getElementById(\'overdueRadar\').style.display=\'none\'">✕</button>';
+}
+
+// ══════════════════════════════════════════════════════
+// ── NEXT TASK TICKER (clock mode) ──
+// ══════════════════════════════════════════════════════
+function updateNextTaskTicker() {
+  const el = document.getElementById('cmNextTicker');
+  if (!el) return;
+  const now = new Date();
+  const nowMins = now.getHours()*60 + now.getMinutes();
+  const allItems = [];
+  tasks.filter(t => t.startTime && !t.checked).forEach(t => {
+    const [h,m] = t.startTime.split(':').map(Number);
+    allItems.push({ name:t.name, startMins:h*60+m, duration:t.duration, type:'task' });
+  });
+  events.filter(ev => eventOccursOn(ev,now) && ev.time).forEach(ev => {
+    const [h,m] = ev.time.split(':').map(Number);
+    allItems.push({ name:ev.name, startMins:h*60+m, duration:ev.duration, type:'event' });
+  });
+  allItems.sort((a,b) => a.startMins - b.startMins);
+
+  const current = allItems.find(i => i.startMins <= nowMins && nowMins < i.startMins+i.duration);
+  const next = allItems.find(i => i.startMins > nowMins);
+
+  if (current) {
+    const remaining = current.startMins + current.duration - nowMins;
+    el.innerHTML = '<span class="ticker-dot active"></span><span class="ticker-label">Now: <strong>' + escHtml(current.name) + '</strong> — ' + remaining + 'min left</span>' +
+      (next ? '<span class="ticker-sep">→</span><span class="ticker-next">Next: ' + escHtml(next.name) + ' @' + fmtMins(next.startMins) + '</span>' : '');
+    el.style.display = 'flex';
+  } else if (next) {
+    const diff = next.startMins - nowMins;
+    el.innerHTML = '<span class="ticker-dot"></span><span class="ticker-label">Next: <strong>' + escHtml(next.name) + '</strong> in ' + diff + 'min @' + fmtMins(next.startMins) + '</span>';
+    el.style.display = 'flex';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// ── TERMINAL: NEW COMMANDS ──
+// ══════════════════════════════════════════════════════
+function cmdTemplate(sub, args) {
+  if (sub === 'save' || sub === 's') {
+    const name = args.shift();
+    if (!name) { termError('Usage: template save "Name" "task1:mins:priority,task2:mins"'); return; }
+    const defsStr = args.join(' ');
+    if (!defsStr) { termError('Need task definitions'); return; }
+    const taskDefs = defsStr.split(',').map(s => {
+      const p = s.trim().split(':');
+      return { name: p[0].trim(), duration: parseInt(p[1])||30, importance: normalizeImp(p[2]||'medium') };
+    }).filter(d => d.name);
+    createTemplate(name, taskDefs);
+    termOk('Template "' + name + '" saved with ' + taskDefs.length + ' tasks');
+  } else if (sub === 'ls' || sub === 'list' || !sub) {
+    if (!templates.length) { termWarn('No templates'); return; }
+    termPrint('head', 'Templates (' + templates.length + '):');
+    templates.forEach(t => termPrint('out', '  ' + t.name + '  →  ' + t.tasks.map(d=>d.name+'('+d.duration+'m)').join(', ')));
+  } else if (sub === 'stamp' || sub === 'use') {
+    const q = args.join(' ');
+    const t = templates.find(x => x.id===q || x.name.toLowerCase().includes(q.toLowerCase()));
+    if (!t) { termError('Template not found: ' + q); return; }
+    const count = stampTemplate(t.id, null);
+    termOk('Stamped ' + count + ' tasks from "' + t.name + '"');
+  } else if (sub === 'rm' || sub === 'del') {
+    const q = args.join(' ');
+    const t = templates.find(x => x.id===q || x.name.toLowerCase().includes(q.toLowerCase()));
+    if (!t) { termError('Template not found: ' + q); return; }
+    deleteTemplate(t.id);
+    termOk('Deleted template: "' + t.name + '"');
+  } else { termError('Usage: template ls|save|stamp|rm'); }
+}
+
+function cmdDep(sub, args) {
+  if (sub === 'add') {
+    const taskQ = args[0], blockerQ = args[1];
+    if (!taskQ || !blockerQ) { termError('Usage: dep add <task> <blocker>'); return; }
+    const task = findTask(taskQ), blocker = findTask(blockerQ);
+    if (!task) { termError('Task not found: ' + taskQ); return; }
+    if (!blocker) { termError('Blocker task not found: ' + blockerQ); return; }
+    setDependency(task.id, blocker.id);
+    termOk('"' + task.name + '" is now blocked by "' + blocker.name + '"');
+  } else if (sub === 'rm') {
+    const taskQ = args[0], blockerQ = args[1];
+    const task = findTask(taskQ), blocker = findTask(blockerQ);
+    if (!task || !blocker) { termError('Task or blocker not found'); return; }
+    removeDependency(task.id, blocker.id);
+    termOk('Dependency removed');
+  } else if (sub === 'ls' || !sub) {
+    const deps = tasks.filter(t => t.blockedBy && t.blockedBy.length);
+    if (!deps.length) { termWarn('No dependencies set'); return; }
+    termPrint('head', 'Dependencies:');
+    deps.forEach(t => {
+      const blockers = (t.blockedBy||[]).map(bid => { const b=tasks.find(x=>x.id===bid); return b?'"'+b.name+'"':'?'; });
+      const status = isBlocked(t) ? ' 🔒 BLOCKED' : ' ✓ clear';
+      termPrint('out', '  "' + t.name + '" blocked by ' + blockers.join(', ') + status);
+    });
+  } else { termError('Usage: dep ls|add|rm'); }
+}
+
+function cmdRecurring(sub, args) {
+  const q = args.join(' ');
+  if (sub === 'set') {
+    const taskQ = args.shift(), schedule = args.join(' ') || 'daily';
+    const t = findTask(taskQ);
+    if (!t) { termError('Task not found: ' + taskQ); return; }
+    t.recurring = schedule; save(); renderTasks();
+    termOk('"' + t.name + '" set to recurring: ' + schedule);
+  } else if (sub === 'clear') {
+    const t = findTask(q);
+    if (!t) { termError('Task not found: ' + q); return; }
+    t.recurring = null; save(); renderTasks();
+    termOk('Recurring cleared for "' + t.name + '"');
+  } else if (sub === 'ls' || !sub) {
+    const rec = tasks.filter(t => t.recurring);
+    if (!rec.length) { termWarn('No recurring tasks'); return; }
+    termPrint('head', 'Recurring tasks:');
+    rec.forEach(t => termPrint('out', '  ' + t.name + '  [' + t.recurring + ']'));
+  } else { termError('Usage: recurring ls|set <task> <schedule>|clear <task>'); }
+}
+
 // ── KEYBOARD HANDLER ──
 function termKeydown(e) {
   const inp = document.getElementById('termInput');
@@ -1706,6 +3337,9 @@ window.addEventListener('load', () => {
 
 // ── EXPOSE TO WINDOW ──
 Object.assign(window,{
+  openKanban,closeKanban,setKanban,kanbanDragStart,kanbanDrop,
+  openArchive,closeArchive,archiveCheckedTasks,restoreFromArchive,deleteFromArchive,clearArchive,
+  smartSchedule,
   addTask,deleteTask,startTimer,stopTimer,resetTimer,toggleEditTask,saveEditTask,
   toggleTaskChecked,toggleDeadlineChecked,
   addEvent,deleteEvent,toggleEditEvent,saveEditEvent,toggleEventForm,scheduleTypeChange,
@@ -1715,6 +3349,17 @@ Object.assign(window,{
   addAlarm,deleteAlarm,toggleAlarm,dismissAlarm,snoozeAlarm,
   pomStart,pomPause,pomReset,pomSetWork,pomSetBreak,
   swStart,swPause,swReset,openCmTab,saveNote,
+  openFocusMode,closeFocusMode,focusMarkDone,
+  openDailyReview,closeDailyReview,reviewNext,reviewPrev,saveReview,reviewToggle,reviewCarryover,
+  openTimeAudit,closeTimeAudit,
+  openAnalytics,closeAnalytics,
+  dismissReminder,
+  addSubtask,subtaskKeydown,toggleSubtask,deleteSubtask,
+  toggleTaskNotes,saveTaskNote,
+  openTemplateManager,closeTemplateManager,createTemplateUI,stampTemplateUI,renderTemplateManager,
+  openWeekView,closeWeekView,weekViewPrev,weekViewNext,
+  openExamCountdown,closeExamCountdown,stampExamPlan,
+  enableTimeboxMode,disableTimeboxMode,
   toggleTerminal,termRun
 });
 
@@ -1729,9 +3374,15 @@ async function init() {
   selectedDay=today;
   const cb=document.getElementById('clockModeBtnWire');
   if(cb) cb.addEventListener('click',openClockMode);
+  // Request notification permission
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
   await syncLoad();
   renderTasks();renderEventList();renderCalendar();renderDeadlines();
+  renderOverdueRadar();updateHeatmap();
   tickClock();setInterval(tickClock,1000);handleResize();
+  // Render heatmap in analytics on demand
 }
 
 init();
