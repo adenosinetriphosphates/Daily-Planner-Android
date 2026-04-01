@@ -4,6 +4,8 @@
 let tasks = [];
 let events = [];
 let deadlines = [];
+let homeworkLog = JSON.parse(localStorage.getItem('dp_homework') || '[]');
+let bellSchedule = JSON.parse(localStorage.getItem('dp_bell') || '[]');
 let db = null;
 let syncEnabled = false;
 let audioCtx = null;
@@ -304,6 +306,7 @@ function renderTasks() {
         '<div class="task-actions">' +
           '<button class="icon-btn start-btn" style="' + (task.running?'display:none':'') + '" onclick="startTimer(\''+ task.id +'\')">' + '▶ Start</button>' +
           '<button class="icon-btn stop-btn"  style="' + (!task.running?'display:none':'') + '" onclick="stopTimer(\''+ task.id +'\')">' + '⏸ Pause</button>' +
+          '<button class="icon-btn focus-launch-btn" onclick="openFocusMode(\''+ task.id +'\')" title="Focus mode">🎯</button>' +
           '<button class="icon-btn" onclick="resetTimer(\''+ task.id +'\')">↺ Reset</button>' +
           '<button class="icon-btn" onclick="toggleEditTask(\''+ task.id +'\')">✏ Edit</button>' +
           '<button class="icon-btn del-btn" onclick="deleteTask(\''+ task.id +'\')">✕</button>' +
@@ -1282,6 +1285,7 @@ function openClockMode() {
   clockModeOpen=true;
   document.getElementById('clockOverlay').classList.add('open');
   document.body.dataset.mode = 'clock';
+  document.body.classList.add('clock-open');
   renderAlarms();
   fetchWeather();
   updateClockMode();
@@ -1293,6 +1297,7 @@ function openClockMode() {
 function closeClockMode() {
   clockModeOpen=false;
   document.getElementById('clockOverlay').classList.remove('open');
+  document.body.classList.remove('clock-open');
   document.body.dataset.mode = document.getElementById('mainTimeline').style.display !== 'none' ? 'timeline' : 'tasks';
   clearInterval(clockModeInterval);clearInterval(clockModeInterval2);
 }
@@ -1529,7 +1534,34 @@ function tickClock() {
   if(ckEl){ for(const node of ckEl.childNodes){ if(node.nodeType===3){ node.textContent=`${pad(h12)}:${pad(m)}:${pad(s)}`; break; } } }
   document.getElementById('clockAmpm').textContent=ampm;
   document.getElementById('clockDate').textContent=DAYS[now.getDay()]+', '+MONTHS[now.getMonth()]+' '+now.getDate()+', '+now.getFullYear();
+  updateBellTicker(now);
   checkAutoStart(now);checkAlarms(now);checkDeadlineWarnings(now);checkPerTaskReminders(now);checkMorningDigest(now);checkInReminders();if(now.getMinutes()===0&&now.getSeconds()===0){updateHeatmap();}if(timeboxMode)updateTimeboxTicker();
+}
+
+function updateBellTicker(now) {
+  const el = document.getElementById('bellTicker');
+  if (!el) return;
+  const dow = now.getDay();
+  // Only show on weekdays
+  if (dow === 0 || dow === 6 || !bellSchedule.length) { el.style.display = 'none'; return; }
+  const nowMins = now.getHours()*60 + now.getMinutes();
+  const sorted = [...bellSchedule].sort((a,b) => a.startMins - b.startMins);
+  // Find current period
+  const current = sorted.find(p => nowMins >= p.startMins && nowMins < p.startMins + p.duration);
+  // Find next period
+  const next = sorted.find(p => p.startMins > nowMins);
+  if (!current && !next) { el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+  if (current) {
+    const remaining = (current.startMins + current.duration) - nowMins;
+    const subInfo = SUBJECTS[current.subject] || null;
+    const dot = subInfo ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${subInfo.color};margin-right:4px;vertical-align:middle;"></span>` : '';
+    el.innerHTML = `<span class="bell-now">${dot}${escHtml(current.label)} — ${remaining}m left</span>` +
+      (next ? `<span class="bell-sep">·</span><span class="bell-next">Next: ${escHtml(next.label)} @ ${fmtBellTime(next.startMins)}</span>` : '');
+  } else if (next) {
+    const mins = next.startMins - nowMins;
+    el.innerHTML = `<span class="bell-next">🔔 ${escHtml(next.label)} in ${mins}m</span>`;
+  }
 }
 
 function checkAutoStart(now) {
@@ -2218,12 +2250,13 @@ let focusModeTask = null, focusInterval = null;
 
 function openFocusMode(taskId) {
   const task = taskId ? tasks.find(t => t.id === taskId) : tasks.find(t => t.running);
-  if (!task) { alert('No running task found. Start a task first, or pass a task name.'); return; }
+  if (!task) { showToast('▶ Start a task first, then tap Focus'); return; }
   focusModeTask = task;
   const overlay = document.getElementById('focusOverlay');
   overlay.style.display = 'flex';
   document.body.style.overflow = 'hidden';
   document.body.dataset.mode = 'focus';
+  document.body.classList.add('focus-open');
   updateFocusMode();
   focusInterval = setInterval(updateFocusMode, 1000);
   if (!task.running) startTimer(task.id);
@@ -2232,6 +2265,7 @@ function openFocusMode(taskId) {
 function closeFocusMode() {
   document.getElementById('focusOverlay').style.display = 'none';
   document.body.style.overflow = '';
+  document.body.classList.remove('focus-open');
   document.body.dataset.mode = document.getElementById('mainTimeline').style.display !== 'none' ? 'timeline' : 'tasks';
   clearInterval(focusInterval);
   focusModeTask = null;
@@ -3497,6 +3531,285 @@ function initTermDrag() {
   });
 }
 
+// ══════════════════════════════════════════════════════
+// ── BELL SCHEDULE ──
+// ══════════════════════════════════════════════════════
+function saveBell() { localStorage.setItem('dp_bell', JSON.stringify(bellSchedule)); }
+
+function fmtBellTime(mins) {
+  const h = Math.floor(mins/60), m = mins%60;
+  const ampm = h>=12?'PM':'AM', h12 = h%12||12;
+  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+
+function openBellSchedule() {
+  let overlay = document.getElementById('bellOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'bellOverlay';
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal-box" style="max-width:520px;">
+        <div class="modal-header">
+          <div class="modal-title">🔔 Bell Schedule</div>
+          <button class="modal-close" onclick="closeBellSchedule()">✕</button>
+        </div>
+        <div id="bellContent" style="padding:16px 24px 24px;overflow-y:auto;max-height:70vh;"></div>
+      </div>`;
+    document.body.appendChild(overlay);
+  }
+  overlay.style.display = 'flex';
+  renderBellSchedule();
+}
+
+function closeBellSchedule() {
+  const el = document.getElementById('bellOverlay');
+  if (el) el.style.display = 'none';
+}
+
+function renderBellSchedule() {
+  const el = document.getElementById('bellContent');
+  if (!el) return;
+  const subjectOpts = '<option value="">— Subject —</option>' +
+    Object.entries(SUBJECTS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
+  let html = `
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px;">Periods show in the clockbar on weekdays and auto-fill the timeline each morning.</p>
+    <div class="bell-add-row">
+      <input type="text" id="bellLabel" placeholder="Period name (e.g. Math)" style="flex:2;border:1.5px solid var(--border2);border-radius:6px;padding:7px 10px;font-family:'DM Sans',sans-serif;font-size:13px;background:var(--surface);color:var(--text);outline:none;" />
+      <input type="time" id="bellStart" style="flex:1;border:1.5px solid var(--border2);border-radius:6px;padding:7px 8px;font-family:'DM Sans',sans-serif;font-size:13px;background:var(--surface);color:var(--text);outline:none;" />
+      <input type="number" id="bellDur" value="50" min="5" max="120" placeholder="min" style="width:60px;border:1.5px solid var(--border2);border-radius:6px;padding:7px 8px;font-family:'DM Sans',sans-serif;font-size:13px;background:var(--surface);color:var(--text);outline:none;" />
+      <select id="bellSubject" style="flex:1;border:1.5px solid var(--border2);border-radius:6px;padding:7px 8px;font-family:'DM Sans',sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;">${subjectOpts}</select>
+      <button class="btn" style="white-space:nowrap;padding:7px 14px;" onclick="addBellPeriod()">+ Add</button>
+    </div>
+    <div style="margin:14px 0 8px;display:flex;gap:8px;align-items:center;">
+      <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;color:var(--text3);text-transform:uppercase;flex:1;">Periods (${bellSchedule.length})</div>
+      ${bellSchedule.length ? `<button class="btn secondary" style="font-size:11px;padding:4px 10px;" onclick="stampBellToTimeline()">📅 Stamp to today</button>` : ''}
+    </div>
+    <div id="bellList">`;
+  if (!bellSchedule.length) {
+    html += '<div class="empty-state">No periods yet. Add your first one above!</div>';
+  } else {
+    [...bellSchedule].sort((a,b)=>a.startMins-b.startMins).forEach(p => {
+      const sub = SUBJECTS[p.subject];
+      const dot = sub ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${sub.color};margin-right:6px;flex-shrink:0;"></span>` : '';
+      html += `<div class="bell-period-row" id="bellrow_${p.id}">
+        ${dot}
+        <div class="bell-period-info">
+          <span class="bell-period-name">${escHtml(p.label)}</span>
+          <span class="bell-period-meta">${fmtBellTime(p.startMins)} · ${p.duration}min${sub?' · '+sub.label:''}</span>
+        </div>
+        <button class="icon-btn del-btn" onclick="deleteBellPeriod('${p.id}')">✕</button>
+      </div>`;
+    });
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function addBellPeriod() {
+  const label = document.getElementById('bellLabel').value.trim();
+  const timeVal = document.getElementById('bellStart').value;
+  const dur = parseInt(document.getElementById('bellDur').value) || 50;
+  const subject = document.getElementById('bellSubject').value;
+  if (!label || !timeVal) { showToast('Enter a name and start time'); return; }
+  const [h,m] = timeVal.split(':').map(Number);
+  bellSchedule.push({ id: uid(), label, startMins: h*60+m, duration: dur, subject });
+  saveBell();
+  document.getElementById('bellLabel').value = '';
+  renderBellSchedule();
+  showToast('Period added');
+}
+
+function deleteBellPeriod(id) {
+  bellSchedule = bellSchedule.filter(p => p.id !== id);
+  saveBell(); renderBellSchedule();
+}
+
+function stampBellToTimeline() {
+  if (!bellSchedule.length) return;
+  const pad = n => String(n).padStart(2,'0');
+  let stamped = 0;
+  bellSchedule.forEach(p => {
+    const startTime = `${pad(Math.floor(p.startMins/60))}:${pad(p.startMins%60)}`;
+    // Don't duplicate if already exists
+    const exists = tasks.find(t => t.name === p.label && t.startTime === startTime);
+    if (exists) return;
+    tasks.push({
+      id: uid(), name: p.label, subject: p.subject||'',
+      importance: 'medium', duration: p.duration,
+      startTime, elapsed:0, running:false, done:false, checked:false,
+      subtasks:[], notes:'', blockedBy:[], recurring:'weekdays',
+    });
+    stamped++;
+  });
+  save(); renderTasks(); renderTimeline();
+  showToast(`Stamped ${stamped} period(s) to today`);
+  closeBellSchedule();
+}
+
+// ══════════════════════════════════════════════════════
+// ── HOMEWORK LOG ──
+// ══════════════════════════════════════════════════════
+function saveHomework() { localStorage.setItem('dp_homework', JSON.stringify(homeworkLog)); }
+
+function openHomeworkLog() {
+  let overlay = document.getElementById('hwOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'hwOverlay';
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal-box" style="max-width:560px;">
+        <div class="modal-header">
+          <div class="modal-title">📚 Homework Log</div>
+          <button class="modal-close" onclick="closeHomeworkLog()">✕</button>
+        </div>
+        <div id="hwContent" style="padding:16px 24px 24px;overflow-y:auto;max-height:75vh;"></div>
+      </div>`;
+    document.body.appendChild(overlay);
+  }
+  overlay.style.display = 'flex';
+  renderHomeworkLog();
+}
+
+function closeHomeworkLog() {
+  const el = document.getElementById('hwOverlay');
+  if (el) el.style.display = 'none';
+}
+
+function renderHomeworkLog() {
+  const el = document.getElementById('hwContent');
+  if (!el) return;
+  const subjectOpts = '<option value="">— Subject —</option>' +
+    Object.entries(SUBJECTS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
+  const active = homeworkLog.filter(h => !h.done).sort((a,b) => a.due.localeCompare(b.due));
+  const done   = homeworkLog.filter(h => h.done).sort((a,b) => b.due.localeCompare(a.due));
+  const today  = toDateStr(new Date());
+
+  function hwCard(hw) {
+    const sub = SUBJECTS[hw.subject];
+    const daysLeft = Math.round((new Date(hw.due+'T00:00:00') - new Date(today+'T00:00:00')) / 86400000);
+    const urgCls = daysLeft < 0 ? 'dl-overdue' : daysLeft === 0 ? 'dl-today' : daysLeft <= 2 ? 'dl-soon' : 'dl-upcoming';
+    const urgLbl = daysLeft < 0 ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? 'Due today!' : `${daysLeft}d left`;
+    const borderStyle = sub ? `border-left:4px solid ${sub.color};` : '';
+    return `<div class="hw-card ${hw.done?'hw-done':''}" style="${borderStyle}" id="hwcard_${hw.id}">
+      <div class="hw-header">
+        <button class="task-check-btn${hw.done?' checked':''}" onclick="toggleHw('${hw.id}')">${hw.done?'✓':''}</button>
+        <div class="hw-name${hw.done?' done-text':''}">${escHtml(hw.assignment)}</div>
+        ${sub ? `<span class="subject-badge" style="background:${sub.bg};color:${sub.color};border-color:${sub.color}40;">${sub.label}</span>` : ''}
+      </div>
+      ${!hw.done ? `<div class="hw-meta">
+        <span>📅 ${hw.due}</span>
+        <span class="deadline-countdown ${urgCls}">${urgLbl}</span>
+      </div>` : ''}
+      <button class="icon-btn del-btn" style="font-size:11px;margin-top:4px;" onclick="deleteHw('${hw.id}')">✕ Remove</button>
+    </div>`;
+  }
+
+  el.innerHTML = `
+    <div class="hw-add-form">
+      <input type="text" id="hwAssignment" placeholder="Assignment description..." style="width:100%;border:1.5px solid var(--border2);border-radius:6px;padding:8px 10px;font-family:'DM Sans',sans-serif;font-size:13px;background:var(--surface);color:var(--text);outline:none;margin-bottom:8px;" />
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <select id="hwSubject" style="flex:1;min-width:120px;border:1.5px solid var(--border2);border-radius:6px;padding:7px 8px;font-family:'DM Sans',sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;cursor:pointer;">${subjectOpts}</select>
+        <input type="date" id="hwDue" style="flex:1;min-width:130px;border:1.5px solid var(--border2);border-radius:6px;padding:7px 8px;font-family:'DM Sans',sans-serif;font-size:12px;background:var(--surface);color:var(--text);outline:none;" />
+        <button class="btn" style="padding:7px 16px;white-space:nowrap;" onclick="addHw()">+ Add</button>
+      </div>
+    </div>
+    <div style="margin:16px 0 8px;font-size:11px;font-weight:600;letter-spacing:0.08em;color:var(--text3);text-transform:uppercase;">
+      Pending (${active.length})
+    </div>
+    ${active.length ? active.map(hwCard).join('') : '<div class="empty-state">No homework! 🎉</div>'}
+    ${done.length ? `
+      <div style="margin:16px 0 8px;font-size:11px;font-weight:600;letter-spacing:0.08em;color:var(--text3);text-transform:uppercase;">Done (${done.length})</div>
+      ${done.slice(0,5).map(hwCard).join('')}
+    ` : ''}`;
+
+  // Set default due date to tomorrow
+  const tmrw = new Date(); tmrw.setDate(tmrw.getDate()+1);
+  const dueFld = document.getElementById('hwDue');
+  if (dueFld && !dueFld.value) dueFld.value = toDateStr(tmrw);
+}
+
+function addHw() {
+  const assignment = document.getElementById('hwAssignment').value.trim();
+  const subject    = document.getElementById('hwSubject').value;
+  const due        = document.getElementById('hwDue').value;
+  if (!assignment || !due) { showToast('Enter assignment and due date'); return; }
+  homeworkLog.push({ id: uid(), assignment, subject, due, done: false, added: toDateStr(new Date()) });
+  saveHomework();
+  document.getElementById('hwAssignment').value = '';
+  renderHomeworkLog();
+}
+
+function toggleHw(id) {
+  const hw = homeworkLog.find(h => h.id === id);
+  if (!hw) return;
+  hw.done = !hw.done;
+  if (hw.done) burstConfetti();
+  saveHomework(); renderHomeworkLog();
+}
+
+function deleteHw(id) {
+  homeworkLog = homeworkLog.filter(h => h.id !== id);
+  saveHomework(); renderHomeworkLog();
+}
+
+// Homework badge count for topbar button
+function hwPendingCount() {
+  return homeworkLog.filter(h => !h.done).length;
+}
+
+// ══════════════════════════════════════════════════════
+// ── SWIPE TO COMPLETE ──
+// ══════════════════════════════════════════════════════
+function initSwipeToComplete() {
+  // Uses event delegation on the task list
+  const list = document.getElementById('taskList');
+  if (!list) return;
+  let startX = 0, startY = 0, active = null, threshold = 80;
+
+  list.addEventListener('touchstart', e => {
+    const card = e.target.closest('.task-card');
+    if (!card || card.classList.contains('task-checked')) return;
+    active = card;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    card.style.transition = 'none';
+  }, { passive: true });
+
+  list.addEventListener('touchmove', e => {
+    if (!active) return;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    if (Math.abs(dy) > Math.abs(dx)) { active = null; return; } // vertical scroll
+    if (dx < 0) return; // only swipe right
+    active.style.transform = `translateX(${Math.min(dx, threshold+20)}px)`;
+    active.style.background = dx > threshold*0.5
+      ? `linear-gradient(to right, #D8F3DC, var(--surface))`
+      : '';
+  }, { passive: true });
+
+  list.addEventListener('touchend', e => {
+    if (!active) return;
+    const dx = e.changedTouches[0].clientX - startX;
+    active.style.transition = 'transform 0.25s ease, background 0.25s';
+    if (dx >= threshold) {
+      active.style.transform = `translateX(110%)`;
+      active.style.opacity = '0';
+      const id = active.id.replace('task_','');
+      setTimeout(() => {
+        toggleTaskChecked(id);
+        document.getElementById('taskList')?.classList.add('swipe-used');
+        active = null;
+      }, 220);
+    } else {
+      active.style.transform = '';
+      active.style.background = '';
+      active = null;
+    }
+  }, { passive: true });
+}
+
 // ── KEYBOARD SHORTCUT: backtick to toggle ──
 document.addEventListener('keydown', e => {
   if (e.key === '`' && !e.ctrlKey && !e.metaKey && document.activeElement.id !== 'termInput') {
@@ -3540,6 +3853,8 @@ Object.assign(window,{
   enableTimeboxMode,disableTimeboxMode,
   toggleTerminal,termRun,
   openSoundSetOverlay,handleSoundDrop,triggerSoundFilePick,clearCustomSound,renderSoundSlots,
+  openBellSchedule,closeBellSchedule,addBellPeriod,deleteBellPeriod,stampBellToTimeline,
+  openHomeworkLog,closeHomeworkLog,addHw,toggleHw,deleteHw,
 });
 
 // ── INIT ──
@@ -3562,6 +3877,14 @@ async function init() {
   renderTasks();renderEventList();renderCalendar();renderDeadlines();
   renderOverdueRadar();updateHeatmap();
   tickClock();setInterval(tickClock,1000);handleResize();
+  initSwipeToComplete();
+  // Auto-stamp bell schedule on weekdays if not already done today
+  const todayDow = new Date().getDay();
+  const lastStamp = localStorage.getItem('dp_bellstamp');
+  if (bellSchedule.length && todayDow >= 1 && todayDow <= 5 && lastStamp !== toDateStr(new Date())) {
+    stampBellToTimeline();
+    localStorage.setItem('dp_bellstamp', toDateStr(new Date()));
+  }
   // Render heatmap in analytics on demand
 }
 

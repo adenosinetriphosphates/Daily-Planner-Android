@@ -27,6 +27,8 @@
     <div class="clock-sep"></div>
     <div class="wakelock-btn" id="wakeLockBtn"><div class="wakelock-dot" id="wlDot"></div><span id="wlLabel">Keep awake</span></div>
     <div class="clock-sep"></div>
+    <div class="bell-ticker" id="bellTicker" style="display:none;"></div>
+    <div class="clock-sep" id="bellTickerSep" style="display:none;"></div>
     <button class="clock-mode-btn" id="clockModeBtnWire">🕐 Clock</button>
   </div>
 
@@ -38,6 +40,8 @@
     <button class="analytics-btn" onclick="openWeekView()" title="Week view">📅 Week</button>
     <button class="analytics-btn" onclick="openExamCountdown()" title="Exam mode">🎯 Exams</button>
     <button class="analytics-btn" onclick="openTemplateManager()" title="Templates">📋 Templates</button>
+    <button class="analytics-btn" onclick="openBellSchedule()" title="Bell schedule">🔔 Bell</button>
+    <button class="analytics-btn" id="hwBtn" onclick="openHomeworkLog()" title="Homework log">📚 HW</button>
     <div class="tab-group">
       <button class="tab-btn active" onclick="switchMain('tasks')">Tasks</button>
       <button class="tab-btn" onclick="switchMain('timeline')">Timeline</button>
@@ -48,7 +52,10 @@
     <div class="mobile-nav-inner">
       <button class="mnav-btn active" id="mnav-tasks" onclick="mobileTab('tasks')"><span class="mnav-icon">✓</span>Tasks</button>
       <button class="mnav-btn" id="mnav-timeline" onclick="mobileTab('timeline')"><span class="mnav-icon">⏱</span>Timeline</button>
-      <button class="mnav-btn" id="mnav-calendar" onclick="mobileTab('calendar')"><span class="mnav-icon">📅</span>Calendar</button>
+      <button class="mnav-btn" id="mnav-hw" onclick="openHomeworkLog()"><span class="mnav-icon">📚</span>HW</button>
+      <button class="mnav-btn" id="mnav-bell" onclick="openBellSchedule()"><span class="mnav-icon">🔔</span>Bell</button>
+      <button class="mnav-btn" id="mnav-focus" onclick="openFocusMode()"><span class="mnav-icon">🎯</span>Focus</button>
+      <button class="mnav-btn" id="mnav-clock" onclick="openClockMode()"><span class="mnav-icon">🕐</span>Clock</button>
     </div>
   </nav>
 
